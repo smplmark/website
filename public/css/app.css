@@ -1,0 +1,128 @@
+:root {
+  --bg: #0e1116;
+  --panel: #161b22;
+  --panel-2: #1c2330;
+  --border: #2a3140;
+  --text: #e6edf3;
+  --muted: #9aa7b4;
+  --accent: #4f8cff;
+  --accent-2: #f78166;
+  --ok: #3fb950;
+  --radius: 10px;
+  --maxw: 1040px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
+
+header.site {
+  border-bottom: 1px solid var(--border);
+  background: rgba(14, 17, 22, 0.85);
+  backdrop-filter: blur(6px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+header.site .wrap {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 58px;
+}
+.brand { font-weight: 700; letter-spacing: -0.02em; font-size: 18px; color: var(--text); }
+.brand span { color: var(--accent); }
+header.site nav { display: flex; gap: 18px; margin-left: auto; }
+header.site nav a { color: var(--muted); font-size: 14px; }
+header.site nav a:hover { color: var(--text); text-decoration: none; }
+
+main { padding: 40px 0 80px; }
+
+.hero { padding: 48px 0 24px; }
+.hero h1 { font-size: 40px; line-height: 1.1; letter-spacing: -0.03em; margin: 0 0 14px; }
+.hero p { font-size: 18px; color: var(--muted); max-width: 660px; margin: 0 0 24px; }
+
+.btn {
+  display: inline-block;
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #06122b; font-weight: 600; }
+.btn:hover { text-decoration: none; border-color: var(--accent); }
+
+h2.section { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 40px 0 14px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+
+.card {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  transition: border-color 0.15s ease;
+}
+.card:hover { border-color: var(--accent); }
+.card h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -0.01em; }
+.card p { margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+.card .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+.pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.pill.published { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-end;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.field select, .field input {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: var(--sans);
+}
+.controls .spacer { margin-left: auto; }
+.controls .links { display: flex; gap: 10px; align-items: center; }
+
+.chart-panel { border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 18px; }
+#chart { width: 100%; }
+.empty { color: var(--muted); padding: 40px; text-align: center; }
+.status { color: var(--muted); font-size: 13px; margin-top: 10px; min-height: 18px; }
+.error { color: var(--accent-2); }
+
+/* uPlot dark tweaks */
+.uplot, .u-title { color: var(--text); font-family: var(--sans); }
+.u-legend { color: var(--muted); font-size: 13px; }
+.u-legend .u-marker { border-radius: 2px; }
+
+footer.site { border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+footer.site .wrap { padding: 22px 20px; display: flex; gap: 16px; }

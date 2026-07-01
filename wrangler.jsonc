@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "smplmark",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+
+  // Static Assets: the ./public dir is served directly for every path EXCEPT /api/*.
+  // For /api/* the Worker runs first (Hono handles the JSON:API); the Worker also falls
+  // back to env.ASSETS.fetch() as a safety net for any non-API path that reaches it.
+  "assets": {
+    "directory": "./public/",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
+    "not_found_handling": "404-page"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "smplmark",
+      // Placeholder for local dev/tests. Replace with the id from `wrangler d1 create smplmark`
+      // before any --remote apply or `wrangler deploy` (see README, Deployment).
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vars": {
+    // Admin auth is a STUB in v1 (internal/seed use). This is NOT a real security boundary;
+    // it is a plaintext placeholder for the future ADR-017 tenant JWT. For a real secret,
+    // use `wrangler secret put ADMIN_TOKEN` (the code reads env.ADMIN_TOKEN either way).
+    "ADMIN_TOKEN": "dev-stub-admin-token"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}
