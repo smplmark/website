@@ -4,6 +4,10 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
 
+  // Serve the Worker on the production custom domain. Cloudflare provisions the DNS record + TLS
+  // cert automatically (requires smplmark.org to be an active zone in the account).
+  "routes": [{ "pattern": "www.smplmark.org", "custom_domain": true }],
+
   // Static Assets: the ./public dir is served directly for every path EXCEPT /api/*.
   // For /api/* the Worker runs first (Hono handles the JSON:API); the Worker also falls
   // back to env.ASSETS.fetch() as a safety net for any non-API path that reaches it.
