@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Create account — smplmark</title>
+  <meta name="description" content="Create a smplmark publisher account to host and publish benchmarks." />
+  <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/css/app.css" />
+  <link rel="stylesheet" href="/css/console.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="/"><picture>
+        <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
+        <img src="/img/logo-dark.png" alt="smplmark" width="108" height="22" />
+      </picture></a>
+      <nav>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/about">About</a>
+        <a href="/login">Sign in</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <div class="auth-wrap">
+        <div class="auth-card">
+          <h1>Create account</h1>
+          <p class="sub">Host benchmarks and publish them under your name.</p>
+
+          <div id="form-error" class="status error" style="display:none;"></div>
+
+          <form id="signup-form" novalidate>
+            <div class="form-row">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" autocomplete="email" required />
+            </div>
+            <div class="form-row">
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" autocomplete="new-password" required />
+            </div>
+            <div class="form-row">
+              <label for="display_name">Display name <span class="muted">(optional)</span></label>
+              <input id="display_name" name="display_name" type="text" autocomplete="name" />
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn primary block">Create account</button>
+            </div>
+          </form>
+
+          <div class="divider">or</div>
+
+          <div class="oidc-buttons">
+            <button type="button" id="oidc-google" class="btn block">Sign up with Google</button>
+            <button type="button" id="oidc-microsoft" class="btn block">Sign up with Microsoft</button>
+          </div>
+
+          <p class="auth-alt">Already have an account? <a href="/login">Sign in</a></p>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <span>smplmark™</span>
+      <a href="/about">About</a>
+      <a href="/benchmarks">Benchmarks</a>
+      <a href="https://github.com/smplmark/website">Source</a>
+    </div>
+  </footer>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/auth-pages.js"></script>
+</body>
+</html>

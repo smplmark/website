@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard — smplmark</title>
+  <meta name="robots" content="noindex" />
+  <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/css/app.css" />
+  <link rel="stylesheet" href="/css/console.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="/"><picture>
+        <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
+        <img src="/img/logo-dark.png" alt="smplmark" width="108" height="22" />
+      </picture></a>
+      <nav>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/about">About</a>
+        <a href="/account" class="active">Dashboard</a>
+        <a href="#" id="nav-signout">Sign out</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <div class="dash-head">
+        <h1 id="account-name">Dashboard</h1>
+        <span class="who" id="account-who"></span>
+      </div>
+
+      <!-- verify-email banner (shown by JS when unverified) -->
+      <div id="verify-banner" class="banner" style="display:none;">
+        <span class="grow">Verify your email address to publish benchmarks.</span>
+        <button type="button" id="resend-verification" class="btn sm">Resend verification</button>
+        <span id="verify-msg" class="row-msg"></span>
+      </div>
+
+      <div id="load-status" class="status"></div>
+
+      <!-- ── Your benchmarks ── -->
+      <h2 class="section">Your benchmarks</h2>
+      <div class="panel">
+        <table class="list">
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Name</th>
+              <th>Status</th>
+              <th class="actions"></th>
+            </tr>
+          </thead>
+          <tbody id="benchmarks-body">
+            <tr><td colspan="4" class="empty-row">Loading…</td></tr>
+          </tbody>
+        </table>
+        <div id="benchmarks-msg" class="row-msg"></div>
+      </div>
+
+      <!-- Manage panel target (per-benchmark inline panel renders here) -->
+      <div id="manage-panel"></div>
+
+      <!-- ── Create benchmark ── -->
+      <h2 class="section">Create benchmark</h2>
+      <div class="panel">
+        <form id="create-benchmark-form">
+          <div class="inline-form">
+            <div class="form-row">
+              <label for="cb-key">Key</label>
+              <input id="cb-key" name="key" type="text" placeholder="my-benchmark" required />
+            </div>
+            <div class="form-row">
+              <label for="cb-name">Name</label>
+              <input id="cb-name" name="name" type="text" placeholder="My Benchmark" required />
+            </div>
+            <div class="form-row">
+              <label for="cb-description">Description</label>
+              <input id="cb-description" name="description" type="text" placeholder="One-line summary" />
+            </div>
+            <button type="submit" class="btn primary">Create</button>
+          </div>
+        </form>
+        <div id="create-benchmark-msg" class="row-msg"></div>
+      </div>
+
+      <!-- ── API keys ── -->
+      <h2 class="section">API keys</h2>
+      <div class="panel">
+        <div id="key-reveal-host"></div>
+        <table class="list">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Prefix</th>
+              <th>Scope</th>
+              <th>State</th>
+              <th class="actions"></th>
+            </tr>
+          </thead>
+          <tbody id="apikeys-body">
+            <tr><td colspan="5" class="empty-row">Loading…</td></tr>
+          </tbody>
+        </table>
+        <div id="apikeys-msg" class="row-msg"></div>
+
+        <div class="panel sub">
+          <form id="create-apikey-form">
+            <div class="inline-form">
+              <div class="form-row">
+                <label for="ak-name">Name</label>
+                <input id="ak-name" name="name" type="text" placeholder="CI upload key" required />
+              </div>
+              <div class="form-row">
+                <label for="ak-scope-type">Scope type</label>
+                <select id="ak-scope-type" name="scope_type">
+                  <option value="ACCOUNT">ACCOUNT</option>
+                  <option value="BENCHMARK">BENCHMARK</option>
+                  <option value="RUN">RUN</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="ak-scope-ref">Scope ref <span class="muted">(optional)</span></label>
+                <input id="ak-scope-ref" name="scope_ref" type="text" placeholder="benchmark/run id" />
+              </div>
+              <button type="submit" class="btn primary">Create key</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="form-actions" style="margin-top:24px;">
+        <button type="button" id="signout-btn" class="btn">Sign out</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <span>smplmark™</span>
+      <a href="/about">About</a>
+      <a href="/benchmarks">Benchmarks</a>
+      <a href="https://github.com/smplmark/website">Source</a>
+    </div>
+  </footer>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/console.js"></script>
+</body>
+</html>
