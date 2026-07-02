@@ -31,8 +31,8 @@ Then open:
 
 - `http://localhost:8787/` — home
 - `http://localhost:8787/benchmarks` — published benchmarks
-- `http://localhost:8787/benchmarks/latency` — the skew chart (defaults to the seeded window,
-  2026-07-01T09:30–12:30Z; adjust the date inputs for live-ingested data)
+- `http://localhost:8787/benchmarks/latency` — the skew chart (defaults to the last 24h UTC; the
+  seeded demo data is dated ~2026-07-01T10:00–12:00Z, so set the date inputs there to view it locally)
 
 ### Dev ingest secrets
 

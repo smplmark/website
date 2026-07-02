@@ -6,11 +6,20 @@
 const BENCH_KEY = "scheduler-latency";
 const COLORS = ["#4f8cff", "#f78166", "#3fb950", "#d2a8ff", "#ffa657"];
 
-// Default window covers the local dev seed data (2026-07-01T10:00–12:00Z). Adjust freely.
-const DEFAULT_FROM = "2026-07-01T09:30:00";
-const DEFAULT_TO = "2026-07-01T12:30:00";
-
 const el = (id) => document.getElementById(id);
+
+// Format a Date as a datetime-local input value in UTC wall-clock (the inputs are labelled UTC).
+function toDatetimeLocalUTC(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    d.getUTCFullYear() +
+    "-" + p(d.getUTCMonth() + 1) +
+    "-" + p(d.getUTCDate()) +
+    "T" + p(d.getUTCHours()) +
+    ":" + p(d.getUTCMinutes()) +
+    ":" + p(d.getUTCSeconds())
+  );
+}
 const targetSel = el("target");
 const fromEl = el("from");
 const toEl = el("to");
@@ -181,8 +190,10 @@ async function downloadCsv() {
 }
 
 async function init() {
-  fromEl.value = DEFAULT_FROM;
-  toEl.value = DEFAULT_TO;
+  // Default to the last 24 hours (UTC). Adjust the inputs to view historical/seeded data.
+  const now = new Date();
+  fromEl.value = toDatetimeLocalUTC(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+  toEl.value = toDatetimeLocalUTC(now);
 
   el("apply").addEventListener("click", draw);
   targetSel.addEventListener("change", draw);
