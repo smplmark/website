@@ -18,6 +18,7 @@ bare-timestamp beacon; `skew_ms` (how far past the top of the minute the beacon 
 
 ```bash
 npm install
+cp .dev.vars.example .dev.vars     # local admin-stub token for `wrangler dev` (gitignored)
 npm run cf-typegen                 # generate worker-configuration.d.ts from wrangler.jsonc
 
 npm run db:migrate:local           # apply migrations to the local D1
@@ -92,11 +93,12 @@ This repo builds and tests entirely locally with no Cloudflare account. To deplo
 3. `npx wrangler d1 migrations apply smplmark --remote`.
 4. Seed production structural data (an account + benchmark + targets). Do **not** ship the dev
    secrets; create targets via `POST /api/v1/targets` and capture each returned secret once.
-5. `npx wrangler deploy`.
-6. Point `www.smplmark.org` DNS / a custom domain at the Worker in the Cloudflare dashboard.
-
-`ADMIN_TOKEN` is a plaintext stub var in `wrangler.jsonc`. For a real boundary, move it out with
-`npx wrangler secret put ADMIN_TOKEN`.
+5. Set the admin-stub token as a secret: `npx wrangler secret put ADMIN_TOKEN`. Until this is set,
+   the config-write endpoints are locked in production (`env.ADMIN_TOKEN` is undefined). It is
+   deliberately **not** a committed var — a public token would let anyone modify config.
+6. `npx wrangler deploy`.
+7. Attach the custom domain: add `"routes": [{ "pattern": "www.smplmark.org", "custom_domain": true }]`
+   to `wrangler.jsonc` and redeploy (requires `smplmark.org` to be an active zone in the account).
 
 ## Project layout
 

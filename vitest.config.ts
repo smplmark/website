@@ -16,7 +16,10 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: {
-        bindings: { TEST_MIGRATIONS: migrations },
+        bindings: {
+          TEST_MIGRATIONS: migrations,
+          ADMIN_TOKEN: "dev-stub-admin-token",
+        },
       },
       wrangler: { configPath: "./wrangler.jsonc" },
     }),

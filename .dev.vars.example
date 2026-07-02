@@ -1,0 +1,3 @@
+# Copy to `.dev.vars` (gitignored) for local `wrangler dev`. Tests supply this via vitest config;
+# production uses `wrangler secret put ADMIN_TOKEN`. Without it, config-write endpoints are locked.
+ADMIN_TOKEN=dev-stub-admin-token
