@@ -18,9 +18,7 @@
     {
       "binding": "DB",
       "database_name": "smplmark",
-      // Placeholder for local dev/tests. Replace with the id from `wrangler d1 create smplmark`
-      // before any --remote apply or `wrangler deploy` (see README, Deployment).
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "25d003c3-9b72-4181-b1ea-55bf37872877",
       "migrations_dir": "migrations"
     }
   ],
