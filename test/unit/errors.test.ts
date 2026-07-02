@@ -27,19 +27,23 @@ describe("toErrorDocument", () => {
     });
   });
 
-  it("maps a uniform UnauthorizedError", () => {
+  it("maps an UnauthorizedError with a non-leaky default detail", () => {
     const out = toErrorDocument(new UnauthorizedError());
     expect(out.status).toBe(401);
     expect(out.document.errors[0]).toEqual({
       status: "401",
       title: "Unauthorized",
-      detail: "Authentication failed.",
+      detail: "Authentication credentials are missing, invalid, expired, or revoked.",
     });
   });
 
-  it("omits detail and source when absent (NotFoundError)", () => {
+  it("gives NotFoundError the static generic detail (ADR-016 non-leaky 404)", () => {
     const out = toErrorDocument(new NotFoundError());
-    expect(out.document.errors[0]).toEqual({ status: "404", title: "Not Found" });
+    expect(out.document.errors[0]).toEqual({
+      status: "404",
+      title: "Not Found",
+      detail: "The requested resource was not found.",
+    });
   });
 
   it("maps a ConflictError", () => {

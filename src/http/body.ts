@@ -58,6 +58,10 @@ export function optionalStringOrNull(
   throw new BadRequestError(`${field} must be a string or null.`, pointer(field));
 }
 
+/**
+ * Enum parsing (ADR-014): SCREAMING_SNAKE_CASE on the wire, case-insensitive on input. The input is
+ * upper-cased before matching, so `"private"`/`"Private"`/`"PRIVATE"` all resolve to `"PRIVATE"`.
+ */
 export function optionalEnum<T extends string>(
   attrs: Record<string, unknown>,
   field: string,
@@ -65,13 +69,29 @@ export function optionalEnum<T extends string>(
 ): T | undefined {
   if (!(field in attrs)) return undefined;
   const v = attrs[field];
-  if (typeof v === "string" && (allowed as readonly string[]).includes(v)) {
-    return v as T;
+  if (typeof v === "string") {
+    const normalized = v.toUpperCase();
+    if ((allowed as readonly string[]).includes(normalized)) return normalized as T;
   }
   throw new BadRequestError(
     `${field} must be one of: ${allowed.join(", ")}.`,
     pointer(field),
   );
+}
+
+/** Like optionalEnum but required (missing → 400). */
+export function requireEnum<T extends string>(
+  attrs: Record<string, unknown>,
+  field: string,
+  allowed: readonly T[],
+): T {
+  if (!(field in attrs)) {
+    throw new BadRequestError(
+      `${field} is required and must be one of: ${allowed.join(", ")}.`,
+      pointer(field),
+    );
+  }
+  return optionalEnum(attrs, field, allowed) as T;
 }
 
 /** A plain JSON object (not array/null), or 400. */

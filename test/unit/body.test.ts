@@ -75,12 +75,14 @@ describe("optionalStringOrNull", () => {
 });
 
 describe("optionalEnum", () => {
-  const allowed = ["a", "b"] as const;
-  it("returns undefined when absent and the value when valid", () => {
+  const allowed = ["ALPHA", "BETA"] as const;
+  it("returns undefined when absent; normalizes case-insensitively to the wire value", () => {
     expect(optionalEnum({}, "k", allowed)).toBeUndefined();
-    expect(optionalEnum({ k: "b" }, "k", allowed)).toBe("b");
+    expect(optionalEnum({ k: "BETA" }, "k", allowed)).toBe("BETA");
+    expect(optionalEnum({ k: "beta" }, "k", allowed)).toBe("BETA");
+    expect(optionalEnum({ k: "Alpha" }, "k", allowed)).toBe("ALPHA");
   });
-  it.each([[{ k: "c" }], [{ k: 1 }]])("rejects %o with 400", (attrs) => {
+  it.each([[{ k: "gamma" }], [{ k: 1 }]])("rejects %o with 400", (attrs) => {
     expect400(() => optionalEnum(attrs as Record<string, unknown>, "k", allowed));
   });
 });

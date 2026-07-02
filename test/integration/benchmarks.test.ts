@@ -1,142 +1,162 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  SKEW_SCHEMA,
-  adminHeaders,
+  apiDelete,
   apiGet,
-  apiPatch,
   apiPost,
+  apiPut,
+  bearer,
   makeBenchmark,
+  markVerified,
+  publish,
+  register,
   resetDb,
-  seedAccount,
+  SKEW_SCHEMA,
+  type Resource,
 } from "./helpers";
 
-let account: string;
-beforeEach(async () => {
-  await resetDb();
-  account = await seedAccount();
-});
+beforeEach(resetDb);
 
-const body = (attrs: Record<string, unknown>) => ({
+const putBody = (attrs: Record<string, unknown>) => ({
   data: { type: "benchmark", attributes: attrs },
 });
 
-describe("POST /api/v1/benchmarks", () => {
-  it("requires admin auth", async () => {
-    const res = await apiPost("/api/v1/benchmarks", body({ account, key: "k", name: "n" }));
-    expect(res.status).toBe(401);
+describe("benchmark create + read", () => {
+  it("creates a PRIVATE benchmark owned by the caller's account", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    expect(b.attributes.status).toBe("PRIVATE");
+    expect(b.attributes.account).toBe(me.account_id);
+    expect(b.attributes.published_at).toBeNull();
   });
 
-  it("creates a benchmark with a bare account ref and parsed sample_schema", async () => {
-    const bm = await makeBenchmark(account);
-    expect(bm.attributes.account).toBe(account);
-    expect(bm.attributes.visibility).toBe("published");
-    expect(bm.attributes.sample_schema).toEqual(SKEW_SCHEMA);
-    expect(bm.attributes.description).toBeNull();
+  it("hides a PRIVATE benchmark from anonymous reads (404) but shows it to the owner", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    expect((await apiGet(`/api/v1/benchmarks/${b.id}`)).status).toBe(404);
+    expect((await apiGet(`/api/v1/benchmarks/${b.id}`, bearer(me.token))).status).toBe(200);
   });
 
-  it("defaults visibility to private", async () => {
-    const bm = await makeBenchmark(account, { key: "priv", visibility: undefined });
-    expect(bm.attributes.visibility).toBe("private");
+  it("lists public benchmarks anonymously; owner sees their private ones via filter[account]", async () => {
+    const me = await register();
+    const priv = await makeBenchmark(me.token, { key: "priv" });
+    const pub = await makeBenchmark(me.token, { key: "pub" });
+    await publish(me.token, me.user_id, pub.id);
+
+    const anon = (await (await apiGet("/api/v1/benchmarks")).json()) as { data: Resource[] };
+    const anonKeys = anon.data.map((r) => r.attributes.key);
+    expect(anonKeys).toContain("pub");
+    expect(anonKeys).not.toContain("priv");
+
+    const owner = (await (
+      await apiGet(`/api/v1/benchmarks?filter[account]=${me.account_id}`, bearer(me.token))
+    ).json()) as { data: Resource[] };
+    expect(owner.data.map((r) => r.attributes.key).sort()).toEqual(["priv", "pub"]);
+    void priv;
+  });
+});
+
+describe("publish gate + lifecycle", () => {
+  it("blocks publishing until the owner's email is verified", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    const blocked = await apiPost(`/api/v1/benchmarks/${b.id}/actions/publish`, undefined, bearer(me.token));
+    expect(blocked.status).toBe(403);
+
+    await markVerified(me.user_id);
+    const ok = await apiPost(`/api/v1/benchmarks/${b.id}/actions/publish`, undefined, bearer(me.token));
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { data: Resource }).data.attributes.status).toBe("PUBLISHED");
   });
 
-  it("rejects an unknown account with 400", async () => {
-    const res = await apiPost(
-      "/api/v1/benchmarks",
-      body({ account: "nope", key: "k", name: "n" }),
-      adminHeaders,
+  it("publish is a one-way door (re-publish → 409)", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    await publish(me.token, me.user_id, b.id);
+    const again = await apiPost(`/api/v1/benchmarks/${b.id}/actions/publish`, undefined, bearer(me.token));
+    expect(again.status).toBe(409);
+  });
+
+  it("withdraws a published benchmark (reason required) and keeps it world-visible", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    await publish(me.token, me.user_id, b.id);
+
+    const noReason = await apiPost(`/api/v1/benchmarks/${b.id}/actions/withdraw`, { data: { type: "benchmark", attributes: {} } }, bearer(me.token));
+    expect(noReason.status).toBe(400);
+
+    const w = await apiPost(
+      `/api/v1/benchmarks/${b.id}/actions/withdraw`,
+      { data: { type: "benchmark", attributes: { withdrawal_reason: "bad clock" } } },
+      bearer(me.token),
     );
-    expect(res.status).toBe(400);
+    expect(w.status).toBe(200);
+    const anon = await apiGet(`/api/v1/benchmarks/${b.id}`);
+    expect(anon.status).toBe(200);
+    expect(((await anon.json()) as { data: Resource }).data.attributes.status).toBe("WITHDRAWN");
   });
 
-  it("rejects a duplicate key within the account with 409", async () => {
-    await makeBenchmark(account);
-    const res = await apiPost(
-      "/api/v1/benchmarks",
-      body({ account, key: "scheduler-latency", name: "again" }),
-      adminHeaders,
+  it("cannot withdraw a benchmark that was never published", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    const w = await apiPost(
+      `/api/v1/benchmarks/${b.id}/actions/withdraw`,
+      { data: { type: "benchmark", attributes: { withdrawal_reason: "x" } } },
+      bearer(me.token),
     );
-    expect(res.status).toBe(409);
+    expect(w.status).toBe(409);
   });
+});
 
-  it("rejects a missing required field with 400", async () => {
-    const res = await apiPost("/api/v1/benchmarks", body({ account, key: "k" }), adminHeaders);
-    expect(res.status).toBe(400);
-  });
+describe("interpretation freeze + append-only", () => {
+  it("allows cosmetic edits but freezes the semantic core after publish", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    await publish(me.token, me.user_id, b.id);
 
-  it("rejects an invalid sample_schema (duplicate metric name) with 400", async () => {
-    const res = await apiPost(
-      "/api/v1/benchmarks",
-      body({
-        account,
-        key: "k",
-        name: "n",
+    // Cosmetic prose edit is allowed.
+    const ok = await apiPut(
+      `/api/v1/benchmarks/${b.id}`,
+      putBody({ name: "Renamed", description: "new tagline", sample_schema: SKEW_SCHEMA }),
+      bearer(me.token),
+    );
+    expect(ok.status).toBe(200);
+
+    // Changing a derived expression is frozen.
+    const frozen = await apiPut(
+      `/api/v1/benchmarks/${b.id}`,
+      putBody({
+        name: "Renamed",
         sample_schema: {
-          metrics: [{ name: "dup", type: "number" }],
-          derived: [{ name: "dup", expr: {} }],
+          metrics: [],
+          derived: [{ name: "skew_ms", expr: { "+": [1, 1] } }],
+          chart: { x: "created_at", y: "skew_ms", x_kind: "TIME" },
         },
       }),
-      adminHeaders,
+      bearer(me.token),
     );
-    expect(res.status).toBe(400);
+    expect(frozen.status).toBe(409);
+  });
+
+  it("forbids deleting a published benchmark but allows deleting a private one", async () => {
+    const me = await register();
+    const priv = await makeBenchmark(me.token, { key: "priv" });
+    expect((await apiDelete(`/api/v1/benchmarks/${priv.id}`, bearer(me.token))).status).toBe(204);
+
+    const pub = await makeBenchmark(me.token, { key: "pub" });
+    await publish(me.token, me.user_id, pub.id);
+    expect((await apiDelete(`/api/v1/benchmarks/${pub.id}`, bearer(me.token))).status).toBe(409);
   });
 });
 
-describe("GET /api/v1/benchmarks", () => {
-  it("lists only published benchmarks", async () => {
-    await makeBenchmark(account, { key: "pub", visibility: "published" });
-    await makeBenchmark(account, { key: "priv", visibility: "private" });
-    const res = await apiGet("/api/v1/benchmarks");
-    expect(res.headers.get("Content-Type")).toContain("application/vnd.api+json");
-    const list = (await res.json()) as { data: { attributes: { key: string } }[]; meta: unknown };
-    expect(list.data.map((b) => b.attributes.key)).toEqual(["pub"]);
-    expect(list.meta).toEqual({ pagination: { page: 1, size: 1000 } });
-  });
-
-  it("supports filter[key]", async () => {
-    await makeBenchmark(account, { key: "a" });
-    await makeBenchmark(account, { key: "b" });
-    const res = await apiGet("/api/v1/benchmarks?filter[key]=b");
-    const list = (await res.json()) as { data: { attributes: { key: string } }[] };
-    expect(list.data).toHaveLength(1);
-    expect(list.data[0].attributes.key).toBe("b");
-  });
-});
-
-describe("GET /api/v1/benchmarks/:id", () => {
-  it("returns a published benchmark", async () => {
-    const bm = await makeBenchmark(account);
-    const res = await apiGet(`/api/v1/benchmarks/${bm.id}`);
-    expect(res.status).toBe(200);
-  });
-
-  it("hides a private benchmark behind a 404", async () => {
-    const bm = await makeBenchmark(account, { visibility: "private" });
-    const res = await apiGet(`/api/v1/benchmarks/${bm.id}`);
-    expect(res.status).toBe(404);
-  });
-
-  it("404s an unknown id", async () => {
-    expect((await apiGet("/api/v1/benchmarks/missing")).status).toBe(404);
-  });
-});
-
-describe("PATCH /api/v1/benchmarks/:id", () => {
-  it("publishes a private benchmark (admin)", async () => {
-    const bm = await makeBenchmark(account, { visibility: "private" });
-    const res = await apiPatch(
-      `/api/v1/benchmarks/${bm.id}`,
-      { data: { type: "benchmark", attributes: { visibility: "published", description: "now live" } } },
-      adminHeaders,
-    );
-    expect(res.status).toBe(200);
-    expect((await apiGet(`/api/v1/benchmarks/${bm.id}`)).status).toBe(200);
-  });
-
-  it("requires admin auth", async () => {
-    const bm = await makeBenchmark(account);
-    const res = await apiPatch(`/api/v1/benchmarks/${bm.id}`, {
-      data: { type: "benchmark", attributes: { name: "x" } },
-    });
-    expect(res.status).toBe(401);
+describe("tenant isolation", () => {
+  it("returns 404 (not 403) when another account touches a private benchmark", async () => {
+    const a = await register("a@example.com");
+    const bench = await makeBenchmark(a.token);
+    const b = await register("b@example.com");
+    expect((await apiGet(`/api/v1/benchmarks/${bench.id}`, bearer(b.token))).status).toBe(404);
+    expect(
+      (await apiPut(`/api/v1/benchmarks/${bench.id}`, putBody({ name: "x", sample_schema: SKEW_SCHEMA }), bearer(b.token))).status,
+    ).toBe(404);
+    expect((await apiDelete(`/api/v1/benchmarks/${bench.id}`, bearer(b.token))).status).toBe(404);
   });
 });

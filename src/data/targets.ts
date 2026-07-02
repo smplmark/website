@@ -1,21 +1,13 @@
-import { ConflictError, NotFoundError } from "../errors";
+import { ConflictError } from "../errors";
+import { orderByClause, type Sort } from "../query/sort";
 import type { TargetRow } from "../types";
 import { isUniqueViolation, jsonOrNull } from "./d1";
-
-/** The minimal target shape the ingest hot path needs: identity + the benchmark's schema. */
-export interface IngestTarget {
-  id: string;
-  benchmark_id: string;
-  sample_schema: string;
-}
 
 export interface CreateTargetInput {
   benchmark_id: string;
   key: string;
   name: string;
   details: unknown | null;
-  /** Already-hashed ingest secret, or null for a bulk-only target. */
-  secret_hash: string | null;
 }
 
 export async function createTarget(
@@ -29,25 +21,15 @@ export async function createTarget(
     key: input.key,
     name: input.name,
     details: jsonOrNull(input.details),
-    secret_hash: input.secret_hash,
     created_at: now,
     updated_at: now,
   };
   try {
     await db
       .prepare(
-        "INSERT INTO target (id, benchmark_id, key, name, details, secret_hash, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO target (id, benchmark_id, key, name, details, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
       )
-      .bind(
-        row.id,
-        row.benchmark_id,
-        row.key,
-        row.name,
-        row.details,
-        row.secret_hash,
-        row.created_at,
-        row.updated_at,
-      )
+      .bind(row.id, row.benchmark_id, row.key, row.name, row.details, row.created_at, row.updated_at)
       .run();
   } catch (e) {
     if (isUniqueViolation(e)) {
@@ -63,75 +45,44 @@ export async function createTarget(
 export async function getTargetById(
   db: D1Database,
   id: string,
-  opts: { publishedOnly: boolean },
 ): Promise<TargetRow | null> {
-  if (opts.publishedOnly) {
-    return (
-      (await db
-        .prepare(
-          "SELECT target.* FROM target JOIN benchmark ON benchmark.id = target.benchmark_id WHERE target.id = ? AND benchmark.visibility = 'published'",
-        )
-        .bind(id)
-        .first<TargetRow>()) ?? null
-    );
-  }
   return (
-    (await db
-      .prepare("SELECT * FROM target WHERE id = ?")
-      .bind(id)
-      .first<TargetRow>()) ?? null
-  );
-}
-
-/** Ingest lookup: resolve a secret hash to the target + its benchmark's sample_schema (one read). */
-export async function getIngestTargetBySecretHash(
-  db: D1Database,
-  secretHash: string,
-): Promise<IngestTarget | null> {
-  return (
-    (await db
-      .prepare(
-        "SELECT target.id AS id, target.benchmark_id AS benchmark_id, benchmark.sample_schema AS sample_schema FROM target JOIN benchmark ON benchmark.id = target.benchmark_id WHERE target.secret_hash = ?",
-      )
-      .bind(secretHash)
-      .first<IngestTarget>()) ?? null
+    (await db.prepare("SELECT * FROM target WHERE id = ?").bind(id).first<TargetRow>()) ??
+    null
   );
 }
 
 export interface ListTargetsInput {
-  filterBenchmark?: string;
+  benchmarkId: string;
   filterKey?: string;
-  publishedOnly: boolean;
+  sort: Sort;
   limit: number;
   offset: number;
   includeTotal: boolean;
 }
 
+const TARGET_COLUMNS: Record<string, string> = {
+  name: "name",
+  key: "key",
+  created_at: "created_at",
+  updated_at: "updated_at",
+};
+
 export async function listTargets(
   db: D1Database,
   input: ListTargetsInput,
 ): Promise<{ rows: TargetRow[]; total?: number }> {
-  const join = input.publishedOnly
-    ? " JOIN benchmark ON benchmark.id = target.benchmark_id"
-    : "";
-  const clauses: string[] = [];
-  const binds: unknown[] = [];
-  if (input.publishedOnly) clauses.push("benchmark.visibility = 'published'");
-  if (input.filterBenchmark !== undefined) {
-    clauses.push("target.benchmark_id = ?");
-    binds.push(input.filterBenchmark);
-  }
+  const clauses = ["benchmark_id = ?"];
+  const binds: unknown[] = [input.benchmarkId];
   if (input.filterKey !== undefined) {
-    clauses.push("target.key = ?");
+    clauses.push("key = ?");
     binds.push(input.filterKey);
   }
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-
+  const where = `WHERE ${clauses.join(" AND ")}`;
+  const order = orderByClause(input.sort, (f) => TARGET_COLUMNS[f], "id");
   const rows = (
     await db
-      .prepare(
-        `SELECT target.* FROM target${join} ${where} ORDER BY target.created_at, target.id LIMIT ? OFFSET ?`,
-      )
+      .prepare(`SELECT * FROM target ${where} ${order} LIMIT ? OFFSET ?`)
       .bind(...binds, input.limit, input.offset)
       .all<TargetRow>()
   ).results;
@@ -139,7 +90,7 @@ export async function listTargets(
   let total: number | undefined;
   if (input.includeTotal) {
     const r = await db
-      .prepare(`SELECT COUNT(*) AS n FROM target${join} ${where}`)
+      .prepare(`SELECT COUNT(*) AS n FROM target ${where}`)
       .bind(...binds)
       .first<{ n: number }>();
     total = r?.n ?? 0;
@@ -147,25 +98,22 @@ export async function listTargets(
   return { rows, total };
 }
 
-export interface UpdateTargetPatch {
-  name?: string;
-  details?: unknown | null;
+export interface UpdateTargetInput {
+  name: string;
+  details: unknown | null;
 }
 
 export async function updateTarget(
   db: D1Database,
   id: string,
-  patch: UpdateTargetPatch,
-): Promise<TargetRow> {
-  const existing = await getTargetById(db, id, { publishedOnly: false });
-  if (!existing) {
-    throw new NotFoundError(`Target ${JSON.stringify(id)} not found.`);
-  }
+  input: UpdateTargetInput,
+): Promise<TargetRow | null> {
+  const existing = await getTargetById(db, id);
+  if (!existing) return null;
   const updated: TargetRow = {
     ...existing,
-    name: patch.name ?? existing.name,
-    details:
-      patch.details !== undefined ? jsonOrNull(patch.details) : existing.details,
+    name: input.name,
+    details: jsonOrNull(input.details),
     updated_at: Date.now(),
   };
   await db
@@ -173,4 +121,17 @@ export async function updateTarget(
     .bind(updated.name, updated.details, updated.updated_at, id)
     .run();
   return updated;
+}
+
+/** Hard-delete a target and its subtree (the route guarantees the benchmark is PRIVATE). */
+export async function deleteTargetCascade(db: D1Database, id: string): Promise<void> {
+  await db.batch([
+    db
+      .prepare(
+        "DELETE FROM observation WHERE run_id IN (SELECT id FROM run WHERE target_id = ?)",
+      )
+      .bind(id),
+    db.prepare("DELETE FROM run WHERE target_id = ?").bind(id),
+    db.prepare("DELETE FROM target WHERE id = ?").bind(id),
+  ]);
 }

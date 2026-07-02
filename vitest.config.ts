@@ -18,7 +18,10 @@ export default defineConfig({
       miniflare: {
         bindings: {
           TEST_MIGRATIONS: migrations,
-          ADMIN_TOKEN: "dev-stub-admin-token",
+          // Auth secrets for tests (never real). KEY_ENCRYPTION_SECRET is base64 of 32 bytes.
+          APP_AUTH_SECRET: "test-app-auth-secret-do-not-use-in-prod",
+          KEY_ENCRYPTION_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          APP_URL: "http://smplmark.test",
         },
       },
       wrangler: { configPath: "./wrangler.jsonc" },
@@ -54,7 +57,7 @@ export default defineConfig({
           functions: 100,
           statements: 100,
         },
-        "src/auth/secret.ts": {
+        "src/auth/crypto.ts": {
           lines: 100,
           branches: 100,
           functions: 100,

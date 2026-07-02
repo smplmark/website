@@ -1,74 +1,101 @@
-import { Hono } from "hono";
-import { getAccountById } from "../data/accounts";
+import { Hono, type Context } from "hono";
+import { covers, isPublicStatus } from "../authz";
+import {
+  accountHasVerifiedUser,
+} from "../data/accounts";
 import {
   createBenchmark,
+  deleteBenchmarkCascade,
   getBenchmarkById,
   listBenchmarks,
+  publishBenchmark,
   updateBenchmark,
-  type UpdateBenchmarkPatch,
+  withdrawBenchmark,
 } from "../data/benchmarks";
-import { BadRequestError, NotFoundError } from "../errors";
 import {
-  attributesOf,
-  optionalEnum,
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from "../errors";
+import {
   optionalStringOrNull,
-  parseJsonBody,
   requireString,
 } from "../http/body";
-import { collectionResponse, resourceResponse } from "../http/jsonapi";
-import { adminAuth, type AppBindings } from "../http/middleware";
-import { paginationMeta, parsePagination } from "../query/pagination";
-import { validateSampleSchema } from "../schema/sample_schema";
+import { collectionResponse, noContentResponse, resourceResponse } from "../http/jsonapi";
+import { getAuth, getOptionalAuth, optionalAuth, requireAuth, type AppBindings } from "../http/middleware";
+import { paginationMeta } from "../query/pagination";
+import {
+  assertFrozenCompatible,
+  parseSampleSchema,
+  validateSampleSchema,
+} from "../schema/sample_schema";
 import { serializeBenchmark } from "../serialize/resource";
-import type { SampleSchema } from "../types";
+import type { BenchmarkRow, SampleSchema, Status } from "../types";
+import { readAttributes, readPagination, readSort } from "./shared";
 
-const VISIBILITY = ["published", "private"] as const;
 const EMPTY_SCHEMA: SampleSchema = { metrics: [], derived: [] };
+const PUBLIC_STATUSES: Status[] = ["PUBLISHED", "WITHDRAWN"];
+const SORT_ALLOWED = ["name", "created_at", "updated_at"] as const;
 
 export const benchmarks = new Hono<AppBindings>();
 
-benchmarks.post("/", adminAuth, async (c) => {
-  const attrs = attributesOf(parseJsonBody(await c.req.text()));
-  const account = requireString(attrs, "account");
+/** Load a benchmark or 404; enforce that the credential covers it (else 404 — no existence leak). */
+async function loadOwned(c: Context<AppBindings>, id: string): Promise<BenchmarkRow> {
+  const auth = getAuth(c);
+  const row = await getBenchmarkById(c.env.DB, id);
+  if (!row || !covers(auth, { account_id: row.account_id, benchmark_id: row.id })) {
+    throw new NotFoundError();
+  }
+  return row;
+}
+
+benchmarks.post("/", requireAuth, async (c) => {
+  const auth = getAuth(c);
+  if (auth.scope_type !== "ACCOUNT") {
+    throw new ForbiddenError("This credential's scope does not permit creating benchmarks.");
+  }
+  const attrs = await readAttributes(c);
   const key = requireString(attrs, "key");
   const name = requireString(attrs, "name");
   const description = optionalStringOrNull(attrs, "description") ?? null;
   const about = optionalStringOrNull(attrs, "about") ?? null;
   const methodology = optionalStringOrNull(attrs, "methodology") ?? null;
-  const visibility = optionalEnum(attrs, "visibility", VISIBILITY) ?? "private";
   const sample_schema =
-    "sample_schema" in attrs
-      ? validateSampleSchema(attrs.sample_schema)
-      : EMPTY_SCHEMA;
+    "sample_schema" in attrs ? validateSampleSchema(attrs.sample_schema) : EMPTY_SCHEMA;
 
-  if (!(await getAccountById(c.env.DB, account))) {
-    throw new BadRequestError(`Unknown account ${JSON.stringify(account)}.`, {
-      pointer: "/data/attributes/account",
-    });
-  }
   const row = await createBenchmark(c.env.DB, {
-    account_id: account,
+    account_id: auth.account_id,
     key,
     name,
     description,
     about,
     methodology,
-    visibility,
     sample_schema,
   });
   return resourceResponse(serializeBenchmark(row), { status: 201 });
 });
 
-benchmarks.get("/", async (c) => {
-  const pagination = parsePagination(
-    c.req.query("page[number]") ?? null,
-    c.req.query("page[size]") ?? null,
-    c.req.query("meta[total]") ?? null,
-  );
+benchmarks.get("/", optionalAuth, async (c) => {
+  const auth = getOptionalAuth(c);
+  const pagination = readPagination(c);
+  const sort = readSort(c, "-created_at", SORT_ALLOWED);
+  const filterAccount = c.req.query("filter[account]");
+  const filterKey = c.req.query("filter[key]");
+
+  // An account-authority caller viewing their own account sees every status; everyone else sees
+  // only world-visible benchmarks.
+  const ownerView =
+    !!auth &&
+    auth.scope_type === "ACCOUNT" &&
+    filterAccount !== undefined &&
+    filterAccount === auth.account_id;
+
   const { rows, total } = await listBenchmarks(c.env.DB, {
-    filterKey: c.req.query("filter[key]"),
-    filterAccount: c.req.query("filter[account]"),
-    publishedOnly: true,
+    statuses: ownerView ? undefined : PUBLIC_STATUSES,
+    accountId: filterAccount,
+    filterKey,
+    sort,
     limit: pagination.limit,
     offset: pagination.offset,
     includeTotal: pagination.includeTotal,
@@ -78,30 +105,81 @@ benchmarks.get("/", async (c) => {
   });
 });
 
-benchmarks.get("/:id", async (c) => {
-  const id = c.req.param("id");
-  const row = await getBenchmarkById(c.env.DB, id, { publishedOnly: true });
-  if (!row) throw new NotFoundError(`Benchmark ${JSON.stringify(id)} not found.`);
+benchmarks.get("/:id", optionalAuth, async (c) => {
+  const auth = getOptionalAuth(c);
+  const row = await getBenchmarkById(c.env.DB, c.req.param("id"));
+  if (!row) throw new NotFoundError();
+  if (!isPublicStatus(row.status)) {
+    if (!auth || !covers(auth, { account_id: row.account_id, benchmark_id: row.id })) {
+      throw new NotFoundError();
+    }
+  }
   return resourceResponse(serializeBenchmark(row));
 });
 
-benchmarks.patch("/:id", adminAuth, async (c) => {
-  const attrs = attributesOf(parseJsonBody(await c.req.text()));
-  const patch: UpdateBenchmarkPatch = {};
-  if ("name" in attrs) patch.name = requireString(attrs, "name");
-  if ("description" in attrs) {
-    patch.description = optionalStringOrNull(attrs, "description") ?? null;
+benchmarks.put("/:id", requireAuth, async (c) => {
+  const existing = await loadOwned(c, c.req.param("id"));
+  const attrs = await readAttributes(c);
+  const name = requireString(attrs, "name");
+  const description = optionalStringOrNull(attrs, "description") ?? null;
+  const about = optionalStringOrNull(attrs, "about") ?? null;
+  const methodology = optionalStringOrNull(attrs, "methodology") ?? null;
+  const sample_schema =
+    "sample_schema" in attrs ? validateSampleSchema(attrs.sample_schema) : EMPTY_SCHEMA;
+
+  // Interpretation freeze: on a published/withdrawn benchmark the semantic core is immutable.
+  if (existing.status !== "PRIVATE") {
+    assertFrozenCompatible(parseSampleSchema(existing.sample_schema), sample_schema);
   }
-  if ("about" in attrs) patch.about = optionalStringOrNull(attrs, "about") ?? null;
-  if ("methodology" in attrs) {
-    patch.methodology = optionalStringOrNull(attrs, "methodology") ?? null;
+
+  const row = await updateBenchmark(c.env.DB, existing.id, {
+    name,
+    description,
+    about,
+    methodology,
+    sample_schema,
+  });
+  return resourceResponse(serializeBenchmark(row as BenchmarkRow));
+});
+
+benchmarks.delete("/:id", requireAuth, async (c) => {
+  const existing = await loadOwned(c, c.req.param("id"));
+  if (existing.status !== "PRIVATE") {
+    throw new ConflictError(
+      "Published benchmark data is append-only and cannot be deleted; withdraw it instead.",
+    );
   }
-  if ("visibility" in attrs) {
-    patch.visibility = optionalEnum(attrs, "visibility", VISIBILITY);
+  await deleteBenchmarkCascade(c.env.DB, existing.id);
+  return noContentResponse();
+});
+
+benchmarks.post("/:id/actions/publish", requireAuth, async (c) => {
+  const existing = await loadOwned(c, c.req.param("id"));
+  if (existing.status !== "PRIVATE") {
+    throw new ConflictError("Only a private benchmark can be published.");
   }
-  if ("sample_schema" in attrs) {
-    patch.sample_schema = validateSampleSchema(attrs.sample_schema);
+  if (!(await accountHasVerifiedUser(c.env.DB, existing.account_id))) {
+    throw new ForbiddenError(
+      "Verify your email address before publishing a benchmark.",
+    );
   }
-  const row = await updateBenchmark(c.env.DB, c.req.param("id"), patch);
-  return resourceResponse(serializeBenchmark(row));
+  const row = await publishBenchmark(c.env.DB, existing.id, Date.now());
+  return resourceResponse(serializeBenchmark(row as BenchmarkRow));
+});
+
+benchmarks.post("/:id/actions/withdraw", requireAuth, async (c) => {
+  const existing = await loadOwned(c, c.req.param("id"));
+  if (existing.status !== "PUBLISHED") {
+    throw new ConflictError("Only a published benchmark can be withdrawn.");
+  }
+  const attrs = await readAttributes(c).catch(() => ({}) as Record<string, unknown>);
+  const reason = optionalStringOrNull(attrs, "withdrawal_reason") ?? null;
+  if (reason === null) {
+    throw new BadRequestError(
+      "withdrawal_reason is required.",
+      { pointer: "/data/attributes/withdrawal_reason" },
+    );
+  }
+  const row = await withdrawBenchmark(c.env.DB, existing.id, Date.now(), reason);
+  return resourceResponse(serializeBenchmark(row as BenchmarkRow));
 });

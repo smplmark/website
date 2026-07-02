@@ -1,6 +1,6 @@
-// Serialize sample resources to CSV (spec §7). Columns: id, created_at, run, then one column per
-// metric name (union across the page, sorted), then meta (a JSON cell). RFC-4180 quoting; rows
-// separated by CRLF. Empty input yields a header-only document.
+// Serialize observation resources to CSV (§9 / ADR-014 content negotiation). Columns: id, created_at,
+// run, then one column per metric name (union across the page, sorted), then meta (a JSON cell).
+// RFC-4180 quoting; rows separated by CRLF. Empty input yields a header-only document.
 import type { ResourceObject } from "../http/jsonapi";
 
 const FIXED_LEADING = ["id", "created_at", "run"];
@@ -25,7 +25,7 @@ function cellFor(value: unknown): string {
   return String(value);
 }
 
-export function samplesToCsv(resources: ResourceObject[]): string {
+export function observationsToCsv(resources: ResourceObject[]): string {
   const metricKeys = new Set<string>();
   for (const r of resources) {
     for (const k of Object.keys(metricsOf(r))) metricKeys.add(k);

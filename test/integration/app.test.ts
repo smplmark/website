@@ -34,4 +34,21 @@ describe("app routing", () => {
       "https://www.smplmark.org/benchmarks/scheduler-latency",
     );
   });
+
+  it("serves a generated OpenAPI document at /api/openapi.json", async () => {
+    const res = await apiGet("/api/openapi.json");
+    expect(res.status).toBe(200);
+    const doc = (await res.json()) as { openapi: string; paths: Record<string, unknown> };
+    expect(doc.openapi).toBe("3.0.3");
+    expect(doc.paths["/api/v1/benchmarks"]).toBeDefined();
+    expect(doc.paths["/api/v1/observations"]).toBeDefined();
+  });
+
+  it("serves the Scalar API reference page", async () => {
+    const res = await apiGet("/api-reference");
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("/api/openapi.json");
+    expect(body).toContain("--scalar-color-accent");
+  });
 });

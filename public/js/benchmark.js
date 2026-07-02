@@ -1,10 +1,15 @@
 "use strict";
 
-// Data-driven benchmark page. Everything shown is pulled from the API for the {key} in the URL;
-// only published benchmarks are reachable (the list endpoint returns published only).
+// Data-driven benchmark page. Everything shown is pulled from the API for the {key} in the URL.
+// The chart renders one of three modes declared in sample_schema.chart:
+//   TIME     x = created_at        → time-series (scheduler-latency)
+//   NUMBER   x = a numeric metric  → numeric-x overlay (aligns disjoint runs, e.g. elapsed_ms)
+//   CATEGORY x = null              → one bar per target (a scalar per target)
+// Credibility (§8) is surfaced, never hidden: a WITHDRAWN benchmark keeps a banner; invalidated
+// runs are listed and flagged; live runs show a "still recording" indicator.
 
-const COLORS = ["#4f8cff", "#f78166", "#3fb950", "#d2a8ff", "#ffa657"];
-const RANGE_SECONDS = { "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400 };
+const COLORS = ["#4f8cff", "#f78166", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff"];
+const RANGE_SECONDS = { all: null, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400 };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) =>
@@ -12,18 +17,17 @@ const esc = (s) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
   );
 
-// Only let http(s) URLs into an href sink; javascript:/data: and unparseable values are dropped.
 function safeHttpUrl(u) {
   try {
-    const parsed = new URL(u);
-    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+    const p = new URL(u);
+    return p.protocol === "http:" || p.protocol === "https:" ? p.href : null;
   } catch (_) {
     return null;
   }
 }
 
 function keyFromPath() {
-  const parts = location.pathname.split("/").filter(Boolean); // ["benchmarks", "{key}"]
+  const parts = location.pathname.split("/").filter(Boolean);
   return decodeURIComponent(parts[1] || "");
 }
 
@@ -31,9 +35,7 @@ async function errorDetail(res) {
   try {
     const doc = await res.json();
     if (doc.errors && doc.errors[0] && doc.errors[0].detail) return doc.errors[0].detail;
-  } catch (_) {
-    /* noop */
-  }
+  } catch (_) {}
   return "HTTP " + res.status;
 }
 
@@ -43,28 +45,33 @@ async function fetchJson(url) {
   return res.json();
 }
 
-// Split a text block into paragraphs on blank lines.
 function paragraphs(text) {
-  if (!text) return "<p class=\"muted\">Not provided.</p>";
+  if (!text) return '<p class="muted">Not provided.</p>';
   return String(text)
     .split(/\n\s*\n/)
     .map((p) => `<p>${esc(p.trim())}</p>`)
     .join("");
 }
 
+function fmtDate(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+}
+
 let benchmark = null;
 let publisher = null;
 let targets = [];
-let metricList = []; // [{name, unit?, description?}]
-let chartDrawn = false;
+let runs = []; // flattened across targets; each carries attributes incl target + live + invalidated
+let metricList = [];
+let chartDecl = null;
+let chartMode = "TIME";
 let chart = null;
+let chartDrawn = false;
 
 async function init() {
   const key = keyFromPath();
   try {
-    const doc = await fetchJson(
-      "/api/v1/benchmarks?filter[key]=" + encodeURIComponent(key),
-    );
+    const doc = await fetchJson("/api/v1/benchmarks?filter[key]=" + encodeURIComponent(key));
     benchmark = doc.data[0];
   } catch (err) {
     el("bm-name").textContent = "Error";
@@ -74,32 +81,39 @@ async function init() {
   }
   if (!benchmark) {
     el("bm-name").textContent = "Benchmark not found";
-    el("load-status").textContent =
-      "No published benchmark with key “" + key + "”.";
+    el("load-status").textContent = "No published benchmark with key “" + key + "”.";
     return;
   }
 
   const a = benchmark.attributes;
   document.title = a.name + " — smplmark";
 
-  // Publisher + targets (best-effort; the page still renders if these fail).
   try {
     publisher = (await fetchJson("/api/v1/accounts/" + encodeURIComponent(a.account))).data;
   } catch (_) {
     publisher = null;
   }
   try {
-    targets = (
-      await fetchJson("/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id))
-    ).data;
+    targets = (await fetchJson("/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id))).data;
   } catch (_) {
     targets = [];
+  }
+  // Runs (for live + invalidation surfacing). Best-effort per target.
+  runs = [];
+  for (const t of targets) {
+    try {
+      const rs = (await fetchJson("/api/v1/runs?filter[target]=" + encodeURIComponent(t.id))).data;
+      for (const r of rs) runs.push({ ...r, targetId: t.id });
+    } catch (_) {}
   }
 
   const schema = a.sample_schema || { metrics: [], derived: [] };
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
+  chartDecl = schema.chart || inferChart(metricList);
+  chartMode = chartDecl ? chartDecl.x_kind || inferKind(chartDecl.x) : "TIME";
 
   renderHead();
+  renderBanners();
   renderOverview();
   renderMethodology();
   renderPublisher();
@@ -109,24 +123,60 @@ async function init() {
   el("tabs-wrap").hidden = false;
 }
 
+function inferChart(metrics) {
+  const y = metrics[0] ? metrics[0].name : null;
+  return y ? { x: "created_at", y: y, x_kind: "TIME" } : null;
+}
+function inferKind(x) {
+  if (x === null || x === undefined) return "CATEGORY";
+  return x === "created_at" ? "TIME" : "NUMBER";
+}
+
 function renderHead() {
   const a = benchmark.attributes;
-  el("bm-name").innerHTML = esc(a.name);
+  el("bm-name").innerHTML =
+    esc(a.name) +
+    (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "");
   el("bm-tagline").textContent = a.description || "";
   if (publisher) {
     el("bm-byline").innerHTML =
-      'Published by <a href="#publisher" id="byline-link">' +
-      esc(publisher.attributes.name) +
-      "</a>";
+      'Published by <a href="#publisher" id="byline-link">' + esc(publisher.attributes.name) + "</a>";
     const link = el("byline-link");
     if (link) link.addEventListener("click", (e) => { e.preventDefault(); activateTab("publisher"); });
   }
 }
 
+function renderBanners() {
+  const box = el("banners");
+  const a = benchmark.attributes;
+  let html = "";
+  if (a.status === "WITHDRAWN") {
+    html +=
+      '<div class="banner withdrawn"><strong>This benchmark was withdrawn' +
+      (a.withdrawn_at ? " on " + esc(fmtDate(a.withdrawn_at)) : "") +
+      ".</strong> " +
+      esc(a.withdrawal_reason || "") +
+      " The data below is kept public for the record.</div>";
+  }
+  const invalid = runs.filter((r) => r.attributes.invalidated);
+  if (invalid.length) {
+    const names = invalid.map((r) => esc(r.attributes.name || r.attributes.key)).join(", ");
+    html +=
+      '<div class="banner invalidated"><strong>Invalidated run' +
+      (invalid.length > 1 ? "s" : "") +
+      ":</strong> " +
+      names +
+      ". These runs remain visible and are plotted with the rest, flagged as invalid.</div>";
+  }
+  const live = runs.filter((r) => r.attributes.live);
+  if (live.length) {
+    html += '<div class="banner live"><span class="dot"></span>' + live.length + " live run" + (live.length > 1 ? "s" : "") + " — still recording.</div>";
+  }
+  box.innerHTML = html;
+}
+
 function renderOverview() {
-  el("overview-about").innerHTML = paragraphs(
-    benchmark.attributes.about || benchmark.attributes.description,
-  );
+  el("overview-about").innerHTML = paragraphs(benchmark.attributes.about || benchmark.attributes.description);
   el("overview-metrics").innerHTML = metricList.length
     ? metricList
         .map((m) => {
@@ -162,56 +212,42 @@ function renderPublisher() {
 
 // ── Tabs ──
 function activateTab(name) {
-  for (const t of document.querySelectorAll(".tab")) {
-    t.classList.toggle("active", t.dataset.tab === name);
-  }
-  for (const p of document.querySelectorAll(".tab-panel")) {
-    p.classList.toggle("active", p.dataset.panel === name);
-  }
+  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
+  for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
   if (name === "data" && !chartDrawn) drawChart();
 }
-
 function setupTabs() {
-  for (const t of document.querySelectorAll(".tab")) {
-    t.addEventListener("click", () => activateTab(t.dataset.tab));
-  }
+  for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => activateTab(t.dataset.tab));
   window.addEventListener("resize", () => {
     if (chart) chart.setSize({ width: el("chart").clientWidth || 900, height: 420 });
   });
 }
 
 // ── Chart ──
-function currentMetric() {
+function currentY() {
   const sel = el("metric");
-  return sel && sel.value ? sel.value : metricList.length ? metricList[0].name : null;
+  if (sel && sel.value) return sel.value;
+  return chartDecl ? chartDecl.y : metricList.length ? metricList[0].name : null;
 }
-
 function currentRange() {
-  const secs = RANGE_SECONDS[el("range").value] || RANGE_SECONDS["24h"];
+  const secs = RANGE_SECONDS[el("range") ? el("range").value : "all"];
+  if (!secs) return null; // all time → no filter
   const now = Date.now();
-  const from = new Date(now - secs * 1000).toISOString();
-  const to = new Date(now).toISOString();
-  return "[" + from + "," + to + ")";
+  return "[" + new Date(now - secs * 1000).toISOString() + "," + new Date(now).toISOString() + ")";
 }
 
-function samplesUrl(range, targetId) {
-  const scope = targetId ? "&filter[target]=" + encodeURIComponent(targetId) : "";
-  return "/api/v1/samples?filter[created_at]=" + encodeURIComponent(range) + scope + "&page[size]=1000";
+function observationsUrl(targetId, range) {
+  let url = "/api/v1/observations?filter[target]=" + encodeURIComponent(targetId) + "&page[size]=1000";
+  if (range) url += "&filter[created_at]=" + encodeURIComponent(range);
+  return url;
 }
-
-async function fetchSamples(range, targetId) {
-  const res = await fetch(samplesUrl(range, targetId), {
-    headers: { Accept: "application/vnd.api+json" },
-  });
+async function fetchObservations(targetId, range) {
+  const res = await fetch(observationsUrl(targetId, range), { headers: { Accept: "application/vnd.api+json" } });
   if (!res.ok) throw new Error(await errorDetail(res));
   return (await res.json()).data;
 }
 
-const AXIS = {
-  stroke: "#9aa7b4",
-  grid: { stroke: "#2a3140", width: 1 },
-  ticks: { stroke: "#2a3140", width: 1 },
-};
+const AXIS = { stroke: "#9aa7b4", grid: { stroke: "#2a3140", width: 1 }, ticks: { stroke: "#2a3140", width: 1 } };
 function utcTicks(u, splits) {
   return splits.map((s) => {
     const d = new Date(s * 1000);
@@ -219,41 +255,53 @@ function utcTicks(u, splits) {
     return p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate()) + " " + p(d.getUTCHours()) + ":" + p(d.getUTCMinutes());
   });
 }
-
 function destroyChart() {
   if (chart) { chart.destroy(); chart = null; }
 }
 
-function renderSeries(seriesTargets, perTarget, metric) {
-  const xset = new Set();
-  perTarget.forEach((list) =>
-    list.forEach((s) => xset.add(Math.round(Date.parse(s.attributes.created_at) / 1000))),
-  );
-  const xs = [...xset].sort((a, b) => a - b);
-  if (!xs.length) {
-    destroyChart();
-    el("empty").hidden = false;
-    return;
+function metricUnit(name) {
+  const m = metricList.find((x) => x.name === name);
+  return m && m.unit ? m.unit : "";
+}
+
+// Build [{x,y}] points for a target's observations for the active mode.
+function pointsFor(list, yKey, xKey) {
+  const pts = [];
+  for (const s of list) {
+    const m = s.attributes.metrics || {};
+    const y = typeof m[yKey] === "number" ? m[yKey] : null;
+    if (y === null) continue;
+    let x;
+    if (xKey === "created_at") x = Math.round(Date.parse(s.attributes.created_at) / 1000);
+    else x = typeof m[xKey] === "number" ? m[xKey] : null;
+    if (x === null || x === undefined) continue;
+    pts.push({ x: x, y: y });
   }
+  pts.sort((a, b) => a.x - b.x);
+  return pts;
+}
+
+function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
+  const xset = new Set();
+  perTargetPoints.forEach((pts) => pts.forEach((p) => xset.add(p.x)));
+  const xs = [...xset].sort((a, b) => a - b);
+  if (!xs.length) { destroyChart(); el("empty").hidden = false; return; }
   el("empty").hidden = true;
   const idx = new Map(xs.map((x, i) => [x, i]));
   const data = [xs];
-  perTarget.forEach((list) => {
+  perTargetPoints.forEach((pts) => {
     const y = new Array(xs.length).fill(null);
-    list.forEach((s) => {
-      const m = s.attributes.metrics;
-      const v = m && typeof m[metric] === "number" ? m[metric] : null;
-      y[idx.get(Math.round(Date.parse(s.attributes.created_at) / 1000))] = v;
-    });
+    pts.forEach((p) => { y[idx.get(p.x)] = p.y; });
     data.push(y);
   });
-  const unit = (metricList.find((m) => m.name === metric) || {}).unit;
+  const unit = metricUnit(yKey);
+  const xLabel = timeX ? null : (chartDecl.x + (metricUnit(chartDecl.x) ? " (" + metricUnit(chartDecl.x) + ")" : ""));
   const opts = {
     width: el("chart").clientWidth || 900,
     height: 420,
-    scales: { x: { time: true } },
+    scales: { x: { time: !!timeX } },
     series: [
-      {},
+      timeX ? {} : { label: xLabel || "x" },
       ...seriesTargets.map((t, i) => ({
         label: t.attributes.name,
         stroke: COLORS[i % COLORS.length],
@@ -263,46 +311,80 @@ function renderSeries(seriesTargets, perTarget, metric) {
       })),
     ],
     axes: [
-      Object.assign({ values: utcTicks }, AXIS),
-      Object.assign({ label: metric + (unit ? " (" + unit + ")" : ""), labelSize: 34 }, AXIS),
+      timeX ? Object.assign({ values: utcTicks }, AXIS) : Object.assign({ label: xLabel, labelSize: 30 }, AXIS),
+      Object.assign({ label: yKey + (unit ? " (" + unit + ")" : ""), labelSize: 34 }, AXIS),
     ],
   };
   destroyChart();
   chart = new uPlot(opts, data, el("chart"));
 }
 
+function renderBars(seriesTargets, perTargetPoints, yKey) {
+  // CATEGORY: reduce each target's observations to a single value (mean of y).
+  destroyChart();
+  const rows = seriesTargets.map((t, i) => {
+    const pts = perTargetPoints[i];
+    const mean = pts.length ? pts.reduce((s, p) => s + p.y, 0) / pts.length : null;
+    return { name: t.attributes.name, value: mean };
+  });
+  const max = Math.max(1, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))));
+  if (!rows.some((r) => r.value != null)) { el("empty").hidden = false; return; }
+  el("empty").hidden = true;
+  const unit = metricUnit(yKey);
+  el("chart").innerHTML =
+    '<div class="bars">' +
+    rows
+      .map((r, i) => {
+        const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
+        const val = r.value == null ? "—" : r.value.toFixed(1) + (unit ? " " + unit : "");
+        return (
+          '<div class="bar-row"><div class="bar-label">' + esc(r.name) + "</div>" +
+          '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
+          '<div class="bar-value">' + esc(val) + "</div></div>"
+        );
+      })
+      .join("") +
+    "</div>";
+}
+
 async function drawChart() {
   chartDrawn = true;
-  const metric = currentMetric();
-  const range = currentRange();
+  const yKey = currentY();
   const selected = el("target").value;
-  el("json").href = samplesUrl(range, selected);
+  const range = chartMode === "TIME" ? currentRange() : null;
+  el("json").href = observationsUrl(selected || (targets[0] && targets[0].id) || "", range);
 
-  if (!metric) {
+  if (!yKey) {
     el("chart-status").textContent = "This benchmark has no numeric metric to plot.";
     return;
   }
   const seriesTargets = selected ? targets.filter((t) => t.id === selected) : targets;
+  if (!seriesTargets.length) { el("chart-status").textContent = "No targets to plot."; return; }
   el("chart-status").className = "status";
   el("chart-status").textContent = "Loading…";
   try {
-    const perTarget = await Promise.all(seriesTargets.map((t) => fetchSamples(range, t.id)));
-    const total = perTarget.reduce((n, list) => n + list.length, 0);
-    renderSeries(seriesTargets, perTarget, metric);
+    const raw = await Promise.all(seriesTargets.map((t) => fetchObservations(t.id, range)));
+    const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
+    const perTargetPoints = raw.map((list) => pointsFor(list, yKey, xKey));
+    if (chartMode === "CATEGORY") renderBars(seriesTargets, perTargetPoints, yKey);
+    else renderXY(seriesTargets, perTargetPoints, yKey, chartMode === "TIME");
+    const total = perTargetPoints.reduce((n, pts) => n + pts.length, 0);
     el("chart-status").textContent =
-      total + " samples · " + seriesTargets.length + " target(s) · metric “" + metric + "”.";
+      total + " observations · " + seriesTargets.length + " target(s) · metric “" + yKey + "” · " + chartMode.toLowerCase() + " chart.";
   } catch (err) {
     destroyChart();
     el("chart-status").className = "status error";
-    el("chart-status").textContent = "Failed to load samples: " + err.message;
+    el("chart-status").textContent = "Failed to load observations: " + err.message;
   }
 }
 
 async function downloadCsv() {
-  const range = currentRange();
   const selected = el("target").value;
+  const range = chartMode === "TIME" ? currentRange() : null;
+  const tid = selected || (targets[0] && targets[0].id);
+  if (!tid) return;
   try {
-    const res = await fetch(samplesUrl(range, selected), { headers: { Accept: "text/csv" } });
+    const res = await fetch(observationsUrl(tid, range), { headers: { Accept: "text/csv" } });
     if (!res.ok) throw new Error(await errorDetail(res));
     const blob = await res.blob();
     const a = document.createElement("a");
@@ -318,10 +400,10 @@ async function downloadCsv() {
 
 function setupChartControls() {
   const targetSel = el("target");
-  const opt = document.createElement("option");
-  opt.value = "";
-  opt.textContent = "All targets";
-  targetSel.appendChild(opt);
+  const optAll = document.createElement("option");
+  optAll.value = "";
+  optAll.textContent = "All targets";
+  targetSel.appendChild(optAll);
   for (const t of targets) {
     const o = document.createElement("option");
     o.value = t.id;
@@ -336,14 +418,18 @@ function setupChartControls() {
       const o = document.createElement("option");
       o.value = m.name;
       o.textContent = m.name;
+      if (chartDecl && m.name === chartDecl.y) o.selected = true;
       metricSel.appendChild(o);
     }
     field.hidden = false;
     metricSel.addEventListener("change", drawChart);
   }
 
+  // Range only applies to time-series charts.
+  if (chartMode !== "TIME" && el("range-field")) el("range-field").hidden = true;
+
   targetSel.addEventListener("change", drawChart);
-  el("range").addEventListener("change", drawChart);
+  if (el("range")) el("range").addEventListener("change", drawChart);
   el("csv").addEventListener("click", downloadCsv);
 }
 

@@ -16,8 +16,11 @@
     "db:seed:local": "wrangler d1 execute smplmark --local --file scripts/seed.sql"
   },
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^7.3.4",
     "hono": "^4.12.27",
-    "json-logic-js": "^2.0.5"
+    "jose": "^5.10.0",
+    "json-logic-js": "^2.0.5",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.17.0",

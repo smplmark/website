@@ -1,5 +1,6 @@
-import { ConflictError, NotFoundError } from "../errors";
-import type { BenchmarkRow, SampleSchema, Visibility } from "../types";
+import { ConflictError } from "../errors";
+import { orderByClause, type Sort } from "../query/sort";
+import type { BenchmarkRow, SampleSchema, Status } from "../types";
 import { isUniqueViolation } from "./d1";
 
 export interface CreateBenchmarkInput {
@@ -7,9 +8,8 @@ export interface CreateBenchmarkInput {
   key: string;
   name: string;
   description: string | null;
-  about?: string | null;
-  methodology?: string | null;
-  visibility: Visibility;
+  about: string | null;
+  methodology: string | null;
   sample_schema: SampleSchema;
 }
 
@@ -24,9 +24,12 @@ export async function createBenchmark(
     key: input.key,
     name: input.name,
     description: input.description,
-    about: input.about ?? null,
-    methodology: input.methodology ?? null,
-    visibility: input.visibility,
+    about: input.about,
+    methodology: input.methodology,
+    status: "PRIVATE",
+    published_at: null,
+    withdrawn_at: null,
+    withdrawal_reason: null,
     sample_schema: JSON.stringify(input.sample_schema),
     created_at: now,
     updated_at: now,
@@ -34,7 +37,7 @@ export async function createBenchmark(
   try {
     await db
       .prepare(
-        "INSERT INTO benchmark (id, account_id, key, name, description, about, methodology, visibility, sample_schema, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO benchmark (id, account_id, key, name, description, about, methodology, status, published_at, withdrawn_at, withdrawal_reason, sample_schema, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?)",
       )
       .bind(
         row.id,
@@ -44,7 +47,7 @@ export async function createBenchmark(
         row.description,
         row.about,
         row.methodology,
-        row.visibility,
+        row.status,
         row.sample_schema,
         row.created_at,
         row.updated_at,
@@ -64,107 +67,159 @@ export async function createBenchmark(
 export async function getBenchmarkById(
   db: D1Database,
   id: string,
-  opts: { publishedOnly: boolean },
 ): Promise<BenchmarkRow | null> {
-  const sql =
-    "SELECT * FROM benchmark WHERE id = ?" +
-    (opts.publishedOnly ? " AND visibility = 'published'" : "");
-  return (await db.prepare(sql).bind(id).first<BenchmarkRow>()) ?? null;
+  return (
+    (await db
+      .prepare("SELECT * FROM benchmark WHERE id = ?")
+      .bind(id)
+      .first<BenchmarkRow>()) ?? null
+  );
 }
 
 export interface ListBenchmarksInput {
+  /** Restrict to these statuses (e.g. public browse = [PUBLISHED, WITHDRAWN]). */
+  statuses?: Status[];
+  accountId?: string;
   filterKey?: string;
-  filterAccount?: string;
-  publishedOnly: boolean;
+  sort: Sort;
   limit: number;
   offset: number;
   includeTotal: boolean;
+}
+
+const BENCHMARK_COLUMNS: Record<string, string> = {
+  name: "name",
+  created_at: "created_at",
+  updated_at: "updated_at",
+};
+
+function benchmarkWhere(input: ListBenchmarksInput): { sql: string; binds: unknown[] } {
+  const clauses: string[] = [];
+  const binds: unknown[] = [];
+  if (input.statuses && input.statuses.length > 0) {
+    clauses.push(`status IN (${input.statuses.map(() => "?").join(",")})`);
+    binds.push(...input.statuses);
+  }
+  if (input.accountId !== undefined) {
+    clauses.push("account_id = ?");
+    binds.push(input.accountId);
+  }
+  if (input.filterKey !== undefined) {
+    clauses.push("key = ?");
+    binds.push(input.filterKey);
+  }
+  return { sql: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", binds };
 }
 
 export async function listBenchmarks(
   db: D1Database,
   input: ListBenchmarksInput,
 ): Promise<{ rows: BenchmarkRow[]; total?: number }> {
-  const clauses: string[] = [];
-  const binds: unknown[] = [];
-  if (input.publishedOnly) clauses.push("visibility = 'published'");
-  if (input.filterKey !== undefined) {
-    clauses.push("key = ?");
-    binds.push(input.filterKey);
-  }
-  if (input.filterAccount !== undefined) {
-    clauses.push("account_id = ?");
-    binds.push(input.filterAccount);
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-
+  const where = benchmarkWhere(input);
+  const order = orderByClause(input.sort, (f) => BENCHMARK_COLUMNS[f], "id");
   const rows = (
     await db
-      .prepare(
-        `SELECT * FROM benchmark ${where} ORDER BY created_at, id LIMIT ? OFFSET ?`,
-      )
-      .bind(...binds, input.limit, input.offset)
+      .prepare(`SELECT * FROM benchmark ${where.sql} ${order} LIMIT ? OFFSET ?`)
+      .bind(...where.binds, input.limit, input.offset)
       .all<BenchmarkRow>()
   ).results;
 
   let total: number | undefined;
   if (input.includeTotal) {
     const r = await db
-      .prepare(`SELECT COUNT(*) AS n FROM benchmark ${where}`)
-      .bind(...binds)
+      .prepare(`SELECT COUNT(*) AS n FROM benchmark ${where.sql}`)
+      .bind(...where.binds)
       .first<{ n: number }>();
     total = r?.n ?? 0;
   }
   return { rows, total };
 }
 
-export interface UpdateBenchmarkPatch {
-  name?: string;
-  description?: string | null;
-  about?: string | null;
-  methodology?: string | null;
-  visibility?: Visibility;
-  sample_schema?: SampleSchema;
+/** Full-replace of the editable content fields. The route enforces the freeze-on-publish rules. */
+export interface UpdateBenchmarkInput {
+  name: string;
+  description: string | null;
+  about: string | null;
+  methodology: string | null;
+  sample_schema: SampleSchema;
 }
 
 export async function updateBenchmark(
   db: D1Database,
   id: string,
-  patch: UpdateBenchmarkPatch,
-): Promise<BenchmarkRow> {
-  const existing = await getBenchmarkById(db, id, { publishedOnly: false });
-  if (!existing) {
-    throw new NotFoundError(`Benchmark ${JSON.stringify(id)} not found.`);
-  }
+  input: UpdateBenchmarkInput,
+): Promise<BenchmarkRow | null> {
+  const existing = await getBenchmarkById(db, id);
+  if (!existing) return null;
   const updated: BenchmarkRow = {
     ...existing,
-    name: patch.name ?? existing.name,
-    description:
-      patch.description !== undefined ? patch.description : existing.description,
-    about: patch.about !== undefined ? patch.about : existing.about,
-    methodology:
-      patch.methodology !== undefined ? patch.methodology : existing.methodology,
-    visibility: patch.visibility ?? existing.visibility,
-    sample_schema:
-      patch.sample_schema !== undefined
-        ? JSON.stringify(patch.sample_schema)
-        : existing.sample_schema,
+    name: input.name,
+    description: input.description,
+    about: input.about,
+    methodology: input.methodology,
+    sample_schema: JSON.stringify(input.sample_schema),
     updated_at: Date.now(),
   };
   await db
     .prepare(
-      "UPDATE benchmark SET name=?, description=?, about=?, methodology=?, visibility=?, sample_schema=?, updated_at=? WHERE id=?",
+      "UPDATE benchmark SET name=?, description=?, about=?, methodology=?, sample_schema=?, updated_at=? WHERE id=?",
     )
     .bind(
       updated.name,
       updated.description,
       updated.about,
       updated.methodology,
-      updated.visibility,
       updated.sample_schema,
       updated.updated_at,
       id,
     )
     .run();
   return updated;
+}
+
+export async function publishBenchmark(
+  db: D1Database,
+  id: string,
+  now: number,
+): Promise<BenchmarkRow | null> {
+  await db
+    .prepare(
+      "UPDATE benchmark SET status='PUBLISHED', published_at=?, updated_at=? WHERE id=?",
+    )
+    .bind(now, now, id)
+    .run();
+  return getBenchmarkById(db, id);
+}
+
+export async function withdrawBenchmark(
+  db: D1Database,
+  id: string,
+  now: number,
+  reason: string | null,
+): Promise<BenchmarkRow | null> {
+  await db
+    .prepare(
+      "UPDATE benchmark SET status='WITHDRAWN', withdrawn_at=?, withdrawal_reason=?, updated_at=? WHERE id=?",
+    )
+    .bind(now, reason, now, id)
+    .run();
+  return getBenchmarkById(db, id);
+}
+
+/** Hard-delete a PRIVATE benchmark and its whole subtree (the route guarantees PRIVATE). */
+export async function deleteBenchmarkCascade(db: D1Database, id: string): Promise<void> {
+  await db.batch([
+    db
+      .prepare(
+        "DELETE FROM observation WHERE run_id IN (SELECT run.id FROM run JOIN target ON target.id = run.target_id WHERE target.benchmark_id = ?)",
+      )
+      .bind(id),
+    db
+      .prepare(
+        "DELETE FROM run WHERE target_id IN (SELECT id FROM target WHERE benchmark_id = ?)",
+      )
+      .bind(id),
+    db.prepare("DELETE FROM target WHERE benchmark_id = ?").bind(id),
+    db.prepare("DELETE FROM benchmark WHERE id = ?").bind(id),
+  ]);
 }

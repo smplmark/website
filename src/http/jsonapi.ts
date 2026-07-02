@@ -53,6 +53,11 @@ export function collectionResponse(
   return jsonApiBody(body, 200, opts.headers);
 }
 
+/** 204 No Content — the success shape for DELETE (ADR-014). */
+export function noContentResponse(): Response {
+  return new Response(null, { status: 204 });
+}
+
 /** Render any thrown error into a JSON:API error Response. */
 export function errorResponse(err: unknown): Response {
   const { status, document } = toErrorDocument(err);

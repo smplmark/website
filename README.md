@@ -1,64 +1,97 @@
 # smplmark
 
-A general-purpose benchmark host on Cloudflare Workers + D1. Publishers upload benchmark
-data on a schedule; visitors review benchmarks from publishers they choose to trust.
-smplmark does not validate the truth of the data, only its shape.
+A general-purpose, multi-tenant, publicly self-serve **benchmark host** on Cloudflare Workers + D1.
+A stranger can sign up, define benchmarks / targets / runs, upload observations (by hand or via API),
+and publish — with no special treatment relative to the first-party smplkit account. smplmark does
+not validate the truth of the data, only its shape; once published, data is **append-only** and
+cannot be quietly altered or removed.
 
-The v1 benchmark is **scheduler-latency**: each scheduler is a *target* that POSTs a
-bare-timestamp beacon; `skew_ms` (how far past the top of the minute the beacon arrived) is
-**computed on read** from the timestamp. See [design notes](#design-notes) for the full model.
+The first real benchmark is smplkit's own **scheduler-latency**: each scheduler POSTs a bare-timestamp
+beacon to a live run using a scoped API key; `skew_ms` (how far past the top of the minute the beacon
+arrived) is **computed on read** from the timestamp.
 
-- **Stack:** Cloudflare Workers + D1 (serverless SQLite), TypeScript, [Hono](https://hono.dev)
-  for routing, [json-logic-js](https://github.com/jwadhams/json-logic-js) for derived metrics,
-  [uPlot](https://github.com/leeoniya/uPlot) for the chart. No build step for the static UI.
-- **API:** JSON:API (`application/vnd.api+json`), singular resource `type`, parent refs as
-  bare id attributes (no `relationships`). `snake_case` paths and fields.
+- **Stack:** Cloudflare Workers + D1 (serverless SQLite), TypeScript, [Hono](https://hono.dev),
+  [json-logic-js](https://github.com/jwadhams/json-logic-js) (derived metrics),
+  [jose](https://github.com/panva/jose) (JWT + OIDC), [uPlot](https://github.com/leeoniya/uPlot)
+  (charts), [Scalar](https://scalar.com) (API reference). No build step for the static UI.
+- **API:** JSON:API (`application/vnd.api+json`), singular resource `type`, plural paths, parent refs
+  as bare id attributes (no `relationships`), `snake_case` everywhere. Follows the smplkit API
+  standard (`~/projects/app/docs/adrs/ADR-014-api-standards.md`).
+
+## Data model
+
+`account (1)→(N) benchmark (1)→(N) target (1)→(N) run (1)→(N) observation`, plus identity
+(`user`, `user_identity`, `account_user`, `session`, `email_verification`) and `api_key`.
+
+- **Status lifecycle:** `PRIVATE → PUBLISHED → WITHDRAWN` (each transition one-way). PRIVATE is a
+  fully-mutable workspace; PUBLISHED is world-visible and append-only; WITHDRAWN keeps the data
+  public behind a "withdrawn on X because Y" banner. Invalidating a run is an annotation, never a
+  removal — invalidated runs stay visible, flagged.
+- **Interpretation freeze:** publishing freezes the semantic core of `sample_schema` (derived
+  expressions + chart mapping); only cosmetic labels and prose stay editable.
 
 ## Local development
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars     # local admin-stub token for `wrangler dev` (gitignored)
-npm run cf-typegen                 # generate worker-configuration.d.ts from wrangler.jsonc
+cp .dev.vars.example .dev.vars     # local secrets for `wrangler dev` (gitignored)
+npm run cf-typegen                 # (re)generate worker-configuration.d.ts
 
 npm run db:migrate:local           # apply migrations to the local D1
-npm run db:seed:local              # seed the smplkit account + scheduler-latency benchmark + demo data
+node scripts/gen-seed.mjs > scripts/seed.sql   # (re)generate the seed (crypto-derived columns)
+npm run db:seed:local              # seed smplkit + scheduler-latency (published) + demo data
 
 npm run dev                        # wrangler dev — http://localhost:8787
 ```
 
-Then open:
+Pages: `/` (home), `/benchmarks`, `/benchmarks/scheduler-latency` (data-driven benchmark page),
+`/about`, `/login` · `/signup` · `/account` (self-serve console), `/api-reference` (Scalar).
 
-- `http://localhost:8787/` — home (data-driven "Recent benchmarks" grid)
-- `http://localhost:8787/benchmarks` — published benchmarks
-- `http://localhost:8787/benchmarks/scheduler-latency` — the data-driven benchmark page (Overview,
-  Data, Methodology, Publisher tabs). The Data chart defaults to the last 24h UTC; the seeded demo
-  data is dated ~2026-07-01T10:00–12:00Z, so pick "Last 30 days" (the widest range) to view it locally.
-- `http://localhost:8787/about` — about smplmark
-
-### Dev ingest secrets
-
-The seed creates two targets with fixed **local-only** ingest secrets (never use these in
-production — real secrets are generated server-side and returned once):
-
-| scheduler   | ingest secret            | run id            |
-| ----------- | ------------------------ | ----------------- |
-| scheduler-a | `dev-secret-scheduler-a` | `run-scheduler-a` |
-| scheduler-b | `dev-secret-scheduler-b` | `run-scheduler-b` |
-
-Post a beacon (empty body — the server stamps `created_at`):
+**Dev credentials** (local only — printed at the top of the generated `scripts/seed.sql`): log in at
+`/login` with `dev@smplkit.test` / `smplmark-dev-password`, or POST a beacon with the seeded
+run-scoped API key:
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/runs/run-scheduler-a/samples \
-  -H "Authorization: Bearer dev-secret-scheduler-a"
+curl -X POST http://localhost:8787/api/v1/observations \
+  -H "Authorization: Bearer sm_api_devlocalkeyDEADBEEF00000000000000000000" \
+  -H "Content-Type: application/vnd.api+json" \
+  -d '{"data":{"type":"observation","attributes":{"run":"run-scheduler-a"}}}'
 ```
 
-Read it back (JSON, then CSV):
+## API
 
-```bash
-curl "http://localhost:8787/api/v1/samples?filter[created_at]=[2026-07-01T00:00:00Z,2026-07-02T00:00:00Z)&filter[target]=tgt-scheduler-a"
-curl -H "Accept: text/csv" "http://localhost:8787/api/v1/samples?filter[created_at]=[2026-07-01T00:00:00Z,2026-07-02T00:00:00Z)&filter[target]=tgt-scheduler-a"
-```
+All under `/api/v1`. Two credential sources on the same `Authorization: Bearer` header, dispatched by
+prefix: an **API key** (`sm_api_…`, scoped ACCOUNT/BENCHMARK/RUN) or a **session JWT** (everything
+else). Public reads of PUBLISHED/WITHDRAWN benchmarks need no credential; PRIVATE resources require a
+covering credential. Cross-tenant references return **404** (never leaking existence).
+
+| Group | Endpoints |
+| --- | --- |
+| Auth (JSON) | `POST /auth/register`, `/auth/login`, `/auth/verify-email`, `/auth/resend-verification`, `/auth/logout`; `GET /auth/oidc/{google\|microsoft}`, `/auth/callback/{provider}` |
+| Users / Account | `GET·PUT /users/current`, `GET·PUT /accounts/current`, `GET /accounts/{id}`, `GET /account_users` |
+| API keys | `POST·GET /api_keys`, `GET /api_keys/{id}` (reveal), `POST /api_keys/{id}/actions/rotate`, `DELETE /api_keys/{id}` (revoke) |
+| Benchmarks | `POST·GET /benchmarks`, `GET·PUT·DELETE /benchmarks/{id}`, `POST /benchmarks/{id}/actions/publish`, `.../actions/withdraw` |
+| Targets | `POST·GET /targets` (`filter[benchmark]` required), `GET·PUT·DELETE /targets/{id}` |
+| Runs | `POST·GET /runs` (`filter[target]` required), `GET·PUT·DELETE /runs/{id}`, `POST /runs/{id}/actions/end`, `.../actions/invalidate` |
+| Observations | `POST /observations` (flat; `run` is a required body field), `GET /observations` (exactly one of `filter[run\|target\|benchmark]`; optional `filter[created_at]` range; `Accept: text/csv` for CSV) |
+
+`sort` (single field, `-` prefix, per-endpoint default + allowed set), `page[number]`/`page[size]`
+(default/cap 1000), and `meta[total]` are honored on read-many endpoints. There is deliberately **no
+`DELETE` on observations**, and no delete on runs/targets/benchmarks once PUBLISHED — the append-only
+stance is structural, not cosmetic.
+
+- **OpenAPI:** generated from the routes at the un-versioned `/api/openapi.json`; rendered by Scalar
+  at `/api-reference`.
+
+## Credentials & secrets
+
+Runtime secrets are Worker bindings (`wrangler secret put <NAME>` in prod, `.dev.vars` locally, and
+`vitest.config.ts` for tests). Required for full function: `APP_AUTH_SECRET` (session-JWT signing),
+`KEY_ENCRYPTION_SECRET` (base64 32-byte AES-GCM key that encrypts API keys at rest for reveal),
+`APP_URL` (public origin). Optional — unset ⇒ feature disabled gracefully:
+`GOOGLE_OIDC_CLIENT_ID`/`_SECRET`, `MICROSOFT_OIDC_CLIENT_ID`/`_SECRET` (OIDC begin → 503),
+`RESEND_API_KEY`/`RESEND_FROM` (verification email → best-effort no-op; a send failure never wedges
+signup). Email verification gates *publishing*, not signup.
 
 ## Testing
 
@@ -68,68 +101,43 @@ npm run test:coverage    # with coverage gates
 npm run typecheck        # tsc for the worker + the node-context config
 ```
 
-Coverage gates: **90%** global (lines/branches/functions/statements) with **100%** on the pure
-modules (`src/query`, `src/logic`, `src/serialize`, `src/auth/secret.ts`).
+Coverage gates: **90%** global with **100%** on the pure modules (`src/query`, `src/logic`,
+`src/serialize`, `src/auth/crypto.ts`).
 
-## API
+## Schema management
 
-All under `/api/v1`. Config writes are gated by an admin-stub (`Authorization: Bearer $ADMIN_TOKEN`);
-public reads expose only `published` benchmarks and their targets/runs/samples.
-
-| Method | Path | Auth | Notes |
-| --- | --- | --- | --- |
-| POST/GET/GET`{id}`/PATCH | `/benchmarks` | admin-stub / public | list is published-only; `filter[key]`, `filter[account]` |
-| POST/GET/GET`{id}`/PATCH | `/targets` | admin-stub / public | POST returns the plaintext secret **once** in `meta.secret`; `filter[benchmark]`, `filter[key]` |
-| POST/GET/GET`{id}`/PATCH | `/runs` | admin-stub / public | `filter[target]`, `filter[key]` |
-| POST | `/runs/{id}/samples` | target secret | ingest; empty body OK; uniform 401 on any failure |
-| GET | `/samples` | public | required `filter[created_at]` (max 30-day window); optional one of `filter[run]`/`filter[target]`/`filter[benchmark]`; `Accept: text/csv` for CSV |
+`migrations/0001_init.sql` is a **one-time clean-slate squash** (there was no production data). The
+moment the first real account exists in production, `0001` is frozen and every subsequent schema
+change becomes a new forward-only migration (`0002_*`, …) — append-only forever. `scripts/seed.sql`
+is generated by `scripts/gen-seed.mjs` (never edit it by hand).
 
 ## Deployment
 
-This repo builds and tests entirely locally with no Cloudflare account. To deploy to
-`www.smplmark.org`:
+Builds and tests entirely locally with no Cloudflare account. To deploy to `www.smplmark.org`:
 
-1. `npx wrangler login` (authenticate to the Cloudflare account).
-2. `npx wrangler d1 create smplmark` — copy the returned `database_id` into `wrangler.jsonc`
-   (it ships with a placeholder `00000000-…`).
+1. `npx wrangler login`.
+2. `npx wrangler d1 create smplmark` — copy `database_id` into `wrangler.jsonc`.
 3. `npx wrangler d1 migrations apply smplmark --remote`.
-4. Seed production structural data (an account + benchmark + targets). Do **not** ship the dev
-   secrets; create targets via `POST /api/v1/targets` and capture each returned secret once.
-5. Set the admin-stub token as a secret: `npx wrangler secret put ADMIN_TOKEN`. Until this is set,
-   the config-write endpoints are locked in production (`env.ADMIN_TOKEN` is undefined). It is
-   deliberately **not** a committed var — a public token would let anyone modify config.
-6. `npx wrangler deploy`.
-7. Attach the custom domain: add `"routes": [{ "pattern": "www.smplmark.org", "custom_domain": true }]`
-   to `wrangler.jsonc` and redeploy (requires `smplmark.org` to be an active zone in the account).
+4. Set secrets: `npx wrangler secret put APP_AUTH_SECRET` (and `KEY_ENCRYPTION_SECRET`, `APP_URL`,
+   and any OIDC / Resend secrets you want enabled). Seed production structural data via the API.
+5. `npx wrangler deploy`.
 
 ## Project layout
 
 ```
-migrations/0001_init.sql   D1 schema (5 tables + indexes)
-scripts/seed.sql           local dev seed (generated)
-public/                    static UI (served by the Worker; uPlot vendored under vendor/)
+migrations/0001_init.sql   D1 schema (clean-slate squash)
+scripts/gen-seed.mjs       generates scripts/seed.sql (crypto-derived columns)
+public/                    static UI (home, benchmark page, console, Scalar page)
 src/
-  index.ts app.ts          worker entry + Hono app (routes + static-asset fallthrough)
-  types.ts errors.ts       domain row types + JSON:API error mapping
-  http/                    envelope, error rendering, body parsing, content negotiation, admin mw
-  query/                   range grammar, 30-day window, pagination, SQL predicates (pure)
-  logic/                   json-logic evaluator + minute_offset_ms + compute-on-read merge (pure)
-  schema/                  sample_schema validation/parsing (pure)
-  serialize/               row -> JSON:API resource, samples -> CSV (pure)
+  index.ts app.ts          worker entry + Hono app (routes, docs, static fallthrough)
+  types.ts errors.ts config.ts   domain types, JSON:API errors, env/feature config
+  http/                    envelope, error rendering, body parsing, dual-credential middleware
+  auth/                    crypto (PBKDF2/AES/SHA-256), JWT, API keys, OIDC, scope cache
+  authz/                   scope-coverage + authority-ceiling checks
+  query/ logic/ schema/    range/sort/pagination, json-logic + compute-on-read, sample_schema
+  serialize/               row → JSON:API resource, observations → CSV
   data/                    D1 access (the only layer touching env.DB)
-  auth/                    secret gen/hash + L1 ingest cache
-  routes/                  benchmarks, targets, runs (+ ingest), samples
+  services/                account provisioning, session issuance
+  email/ openapi/          Resend transport, generated spec + Scalar page
+  routes/                  auth, users, accounts, account_users, api_keys, benchmarks, targets, runs, observations
 ```
-
-## Design notes
-
-- **Compute-on-read is the rule.** Raw samples store only what was given; `skew_ms` and every
-  other derived value are computed when the sample is read, from `sample_schema.derived`
-  expressions. The stored row commits to no interpretation.
-- **Uniform 401.** Every ingest-auth failure (missing/malformed/unknown secret, run/target
-  mismatch) returns a byte-identical 401, to avoid leaking that a secret's shape was valid.
-- **Hot path.** Ingest never calls out; a warm isolate authenticates from an in-memory
-  positives-only cache of `secret_hash → target`, falling back to one indexed D1 read.
-- **Deliberately deferred (v1):** account signup / real tenant auth, private-read auth, windowed
-  aggregation (coverage / percentiles / downsampling), secret rotation, `DELETE` on config
-  resources. The data model already carries the multi-tenant hooks (`account_id`, `visibility`).

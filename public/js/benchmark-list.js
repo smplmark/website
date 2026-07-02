@@ -34,9 +34,11 @@ async function load() {
     grid.innerHTML = doc.data
       .map((b) => {
         const a = b.attributes;
+        const cls = a.status === "WITHDRAWN" ? "withdrawn" : "published";
+        const label = a.status === "WITHDRAWN" ? "withdrawn" : "published";
         return `
           <a class="card" href="/benchmarks/${encodeURIComponent(a.key)}">
-            <h3>${esc(a.name)} <span class="pill published">${esc(a.visibility)}</span></h3>
+            <h3>${esc(a.name)} <span class="pill ${cls}">${esc(label)}</span></h3>
             <p>${esc(a.description || "")}</p>
             <div class="meta">${esc(metricNames(a.sample_schema))}</div>
           </a>`;

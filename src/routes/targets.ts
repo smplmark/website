@@ -1,65 +1,96 @@
-import { Hono } from "hono";
-import { generateSecret, hashSecret } from "../auth/secret";
+import { Hono, type Context } from "hono";
+import { covers, isPublicStatus } from "../authz";
 import { getBenchmarkById } from "../data/benchmarks";
 import {
   createTarget,
+  deleteTargetCascade,
   getTargetById,
   listTargets,
   updateTarget,
-  type UpdateTargetPatch,
 } from "../data/targets";
-import { BadRequestError, NotFoundError } from "../errors";
+import { ConflictError, NotFoundError } from "../errors";
+import { requireString } from "../http/body";
+import { collectionResponse, noContentResponse, resourceResponse } from "../http/jsonapi";
 import {
-  attributesOf,
-  parseJsonBody,
-  requireString,
-} from "../http/body";
-import { collectionResponse, resourceResponse } from "../http/jsonapi";
-import { adminAuth, type AppBindings } from "../http/middleware";
-import { paginationMeta, parsePagination } from "../query/pagination";
+  getAuth,
+  getOptionalAuth,
+  optionalAuth,
+  requireAuth,
+  type AppBindings,
+} from "../http/middleware";
+import { paginationMeta } from "../query/pagination";
 import { serializeTarget } from "../serialize/resource";
+import type { BenchmarkRow, TargetRow } from "../types";
+import { readAttributes, readPagination, readSort } from "./shared";
+
+const SORT_ALLOWED = ["name", "key", "created_at", "updated_at"] as const;
 
 export const targets = new Hono<AppBindings>();
 
-targets.post("/", adminAuth, async (c) => {
-  const attrs = attributesOf(parseJsonBody(await c.req.text()));
-  const benchmark = requireString(attrs, "benchmark");
+/** Load a target + its parent benchmark, or 404 (existence not leaked when the cred can't cover it). */
+async function loadOwned(
+  c: Context<AppBindings>,
+  id: string,
+): Promise<{ target: TargetRow; benchmark: BenchmarkRow }> {
+  const auth = getAuth(c);
+  const target = await getTargetById(c.env.DB, id);
+  if (!target) throw new NotFoundError();
+  const benchmark = await getBenchmarkById(c.env.DB, target.benchmark_id);
+  if (
+    !benchmark ||
+    !covers(auth, {
+      account_id: benchmark.account_id,
+      benchmark_id: benchmark.id,
+      target_id: target.id,
+    })
+  ) {
+    throw new NotFoundError();
+  }
+  return { target, benchmark };
+}
+
+targets.post("/", requireAuth, async (c) => {
+  const auth = getAuth(c);
+  const attrs = await readAttributes(c);
+  const benchmarkId = requireString(attrs, "benchmark");
+  const benchmark = await getBenchmarkById(c.env.DB, benchmarkId);
+  if (
+    !benchmark ||
+    !covers(auth, { account_id: benchmark.account_id, benchmark_id: benchmark.id })
+  ) {
+    throw new NotFoundError();
+  }
   const key = requireString(attrs, "key");
   const name = requireString(attrs, "name");
   const details = "details" in attrs ? attrs.details : null;
-
-  if (!(await getBenchmarkById(c.env.DB, benchmark, { publishedOnly: false }))) {
-    throw new BadRequestError(`Unknown benchmark ${JSON.stringify(benchmark)}.`, {
-      pointer: "/data/attributes/benchmark",
-    });
-  }
-
-  // Secret is generated server-side and returned once, in plaintext, in the response meta.
-  const secret = generateSecret();
-  const secret_hash = await hashSecret(secret);
   const row = await createTarget(c.env.DB, {
-    benchmark_id: benchmark,
+    benchmark_id: benchmark.id,
     key,
     name,
     details,
-    secret_hash,
   });
-  return resourceResponse(serializeTarget(row), {
-    status: 201,
-    meta: { secret },
-  });
+  return resourceResponse(serializeTarget(row), { status: 201 });
 });
 
-targets.get("/", async (c) => {
-  const pagination = parsePagination(
-    c.req.query("page[number]") ?? null,
-    c.req.query("page[size]") ?? null,
-    c.req.query("meta[total]") ?? null,
-  );
+targets.get("/", optionalAuth, async (c) => {
+  const auth = getOptionalAuth(c);
+  const benchmarkId = c.req.query("filter[benchmark]");
+  if (benchmarkId === undefined) {
+    throw new NotFoundError(); // must be scoped to a benchmark
+  }
+  const benchmark = await getBenchmarkById(c.env.DB, benchmarkId);
+  if (!benchmark) throw new NotFoundError();
+  if (!isPublicStatus(benchmark.status)) {
+    if (!auth || !covers(auth, { account_id: benchmark.account_id, benchmark_id: benchmark.id })) {
+      throw new NotFoundError();
+    }
+  }
+  const pagination = readPagination(c);
+  const sort = readSort(c, "created_at", SORT_ALLOWED);
   const { rows, total } = await listTargets(c.env.DB, {
-    filterBenchmark: c.req.query("filter[benchmark]"),
+    benchmarkId,
     filterKey: c.req.query("filter[key]"),
-    publishedOnly: true,
+    sort,
     limit: pagination.limit,
     offset: pagination.offset,
     includeTotal: pagination.includeTotal,
@@ -69,18 +100,43 @@ targets.get("/", async (c) => {
   });
 });
 
-targets.get("/:id", async (c) => {
-  const id = c.req.param("id");
-  const row = await getTargetById(c.env.DB, id, { publishedOnly: true });
-  if (!row) throw new NotFoundError(`Target ${JSON.stringify(id)} not found.`);
-  return resourceResponse(serializeTarget(row));
+targets.get("/:id", optionalAuth, async (c) => {
+  const auth = getOptionalAuth(c);
+  const target = await getTargetById(c.env.DB, c.req.param("id"));
+  if (!target) throw new NotFoundError();
+  const benchmark = await getBenchmarkById(c.env.DB, target.benchmark_id);
+  if (!benchmark) throw new NotFoundError();
+  if (!isPublicStatus(benchmark.status)) {
+    if (
+      !auth ||
+      !covers(auth, {
+        account_id: benchmark.account_id,
+        benchmark_id: benchmark.id,
+        target_id: target.id,
+      })
+    ) {
+      throw new NotFoundError();
+    }
+  }
+  return resourceResponse(serializeTarget(target));
 });
 
-targets.patch("/:id", adminAuth, async (c) => {
-  const attrs = attributesOf(parseJsonBody(await c.req.text()));
-  const patch: UpdateTargetPatch = {};
-  if ("name" in attrs) patch.name = requireString(attrs, "name");
-  if ("details" in attrs) patch.details = attrs.details;
-  const row = await updateTarget(c.env.DB, c.req.param("id"), patch);
-  return resourceResponse(serializeTarget(row));
+targets.put("/:id", requireAuth, async (c) => {
+  const { target } = await loadOwned(c, c.req.param("id"));
+  const attrs = await readAttributes(c);
+  const name = requireString(attrs, "name");
+  const details = "details" in attrs ? attrs.details : null;
+  const row = await updateTarget(c.env.DB, target.id, { name, details });
+  return resourceResponse(serializeTarget(row as TargetRow));
+});
+
+targets.delete("/:id", requireAuth, async (c) => {
+  const { target, benchmark } = await loadOwned(c, c.req.param("id"));
+  if (benchmark.status !== "PRIVATE") {
+    throw new ConflictError(
+      "Published benchmark data is append-only; a target cannot be deleted.",
+    );
+  }
+  await deleteTargetCascade(c.env.DB, target.id);
+  return noContentResponse();
 });

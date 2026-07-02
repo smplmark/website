@@ -1,101 +1,72 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  adminHeaders,
+  apiDelete,
   apiGet,
-  apiPatch,
   apiPost,
+  apiPut,
+  bearer,
   makeBenchmark,
   makeTarget,
+  publish,
+  register,
   resetDb,
-  seedAccount,
+  type Resource,
 } from "./helpers";
 
-let account: string;
-beforeEach(async () => {
-  await resetDb();
-  account = await seedAccount();
-});
+beforeEach(resetDb);
 
-describe("POST /api/v1/targets", () => {
-  it("returns the plaintext secret exactly once and never again", async () => {
-    const bm = await makeBenchmark(account);
-    const { target, secret } = await makeTarget(bm.id);
-    expect(secret).toMatch(/^[0-9a-f-]{36}$/);
-    // The create resource itself must not carry the secret or its hash.
-    expect(JSON.stringify(target)).not.toContain("secret");
+describe("targets", () => {
+  it("creates a target under a benchmark and rejects a cross-account parent (404)", async () => {
+    const a = await register("a@example.com");
+    const b = await makeBenchmark(a.token);
+    const t = await makeTarget(a.token, b.id);
+    expect(t.attributes.benchmark).toBe(b.id);
 
-    const res = await apiGet(`/api/v1/targets/${target.id}`);
-    const text = await res.text();
-    expect(text).not.toContain(secret);
-    expect(text).not.toContain("secret_hash");
-    expect(text).not.toContain("secret");
-  });
-
-  it("requires admin auth", async () => {
-    const bm = await makeBenchmark(account);
-    const res = await apiPost("/api/v1/targets", {
-      data: { type: "target", attributes: { benchmark: bm.id, key: "k", name: "k" } },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it("rejects an unknown benchmark with 400", async () => {
+    const other = await register("b@example.com");
     const res = await apiPost(
       "/api/v1/targets",
-      { data: { type: "target", attributes: { benchmark: "nope", key: "k", name: "k" } } },
-      adminHeaders,
+      { data: { type: "target", attributes: { benchmark: b.id, key: "x", name: "x" } } },
+      bearer(other.token),
     );
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
   });
 
-  it("rejects a duplicate key within the benchmark with 409", async () => {
-    const bm = await makeBenchmark(account);
-    await makeTarget(bm.id, "dup");
-    const res = await apiPost(
-      "/api/v1/targets",
-      { data: { type: "target", attributes: { benchmark: bm.id, key: "dup", name: "x" } } },
-      adminHeaders,
-    );
-    expect(res.status).toBe(409);
-  });
-});
+  it("requires filter[benchmark] on list and honors visibility", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    await makeTarget(me.token, b.id);
+    expect((await apiGet("/api/v1/targets")).status).toBe(404);
 
-describe("GET /api/v1/targets", () => {
-  it("filters by benchmark and hides targets of private benchmarks", async () => {
-    const pub = await makeBenchmark(account, { key: "pub", visibility: "published" });
-    const priv = await makeBenchmark(account, { key: "priv", visibility: "private" });
-    const { target: pt } = await makeTarget(pub.id, "pt");
-    await makeTarget(priv.id, "xt");
+    // Private → anon sees nothing (404), owner lists.
+    expect((await apiGet(`/api/v1/targets?filter[benchmark]=${b.id}`)).status).toBe(404);
+    const owner = await apiGet(`/api/v1/targets?filter[benchmark]=${b.id}`, bearer(me.token));
+    expect(((await owner.json()) as { data: Resource[] }).data.length).toBe(1);
 
-    const res = await apiGet(`/api/v1/targets?filter[benchmark]=${pub.id}`);
-    const list = (await res.json()) as { data: { id: string }[] };
-    expect(list.data.map((t) => t.id)).toEqual([pt.id]);
-
-    // A target under a private benchmark is not readable.
-    const all = await apiGet("/api/v1/targets");
-    const allList = (await all.json()) as { data: { id: string }[] };
-    expect(allList.data).toHaveLength(1);
+    await publish(me.token, me.user_id, b.id);
+    expect((await apiGet(`/api/v1/targets?filter[benchmark]=${b.id}`)).status).toBe(200);
   });
 
-  it("hides a target of a private benchmark behind a 404", async () => {
-    const priv = await makeBenchmark(account, { visibility: "private" });
-    const { target } = await makeTarget(priv.id);
-    expect((await apiGet(`/api/v1/targets/${target.id}`)).status).toBe(404);
-  });
-});
+  it("updates a target and enforces append-only delete rules", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    const t = await makeTarget(me.token, b.id);
 
-describe("PATCH /api/v1/targets/:id", () => {
-  it("updates the name (admin) and preserves the secret hash internally", async () => {
-    const bm = await makeBenchmark(account);
-    const { target } = await makeTarget(bm.id);
-    const res = await apiPatch(
-      `/api/v1/targets/${target.id}`,
+    const put = await apiPut(
+      `/api/v1/targets/${t.id}`,
       { data: { type: "target", attributes: { name: "Renamed", details: { region: "eu" } } } },
-      adminHeaders,
+      bearer(me.token),
     );
-    expect(res.status).toBe(200);
-    const updated = (await res.json()) as { data: { attributes: Record<string, unknown> } };
-    expect(updated.data.attributes.name).toBe("Renamed");
-    expect(updated.data.attributes.details).toEqual({ region: "eu" });
+    expect(put.status).toBe(200);
+    expect(((await put.json()) as { data: Resource }).data.attributes.name).toBe("Renamed");
+
+    await publish(me.token, me.user_id, b.id);
+    expect((await apiDelete(`/api/v1/targets/${t.id}`, bearer(me.token))).status).toBe(409);
+  });
+
+  it("deletes a target of a private benchmark", async () => {
+    const me = await register();
+    const b = await makeBenchmark(me.token);
+    const t = await makeTarget(me.token, b.id);
+    expect((await apiDelete(`/api/v1/targets/${t.id}`, bearer(me.token))).status).toBe(204);
   });
 });

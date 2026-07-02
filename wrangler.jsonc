@@ -34,10 +34,13 @@
     }
   ],
 
-  // ADMIN_TOKEN (admin-stub for config writes) is intentionally NOT a committed var — a public
-  // token would let anyone modify config. It comes from `.dev.vars` (local dev, gitignored), the
-  // vitest miniflare bindings (tests), and `wrangler secret put ADMIN_TOKEN` (prod). With no
-  // secret set, prod's config-write endpoints are locked (env.ADMIN_TOKEN is undefined).
+  // Runtime secrets are NOT committed vars. Set them with `wrangler secret put <NAME>` in prod and
+  // `.dev.vars` locally (tests supply their own via vitest.config.ts). Required for full function:
+  //   APP_AUTH_SECRET        — session-JWT signing (HS256)
+  //   KEY_ENCRYPTION_SECRET  — base64 32-byte AES-GCM key encrypting API keys at rest
+  //   APP_URL                — public origin for OIDC redirect + email links
+  // Optional (unset → feature disabled gracefully): GOOGLE_OIDC_CLIENT_ID/SECRET,
+  //   MICROSOFT_OIDC_CLIENT_ID/SECRET (OIDC begin → 503), RESEND_API_KEY, RESEND_FROM (email no-op).
 
   "observability": {
     "enabled": true

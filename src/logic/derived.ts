@@ -1,8 +1,19 @@
-// Compute-on-read: merge a sample's stored metrics with its benchmark's derived metrics into one
-// flat object. The consumer can't tell stored from derived — that split lives only in sample_schema
-// and is the publisher's business (spec §4).
+// Compute-on-read: merge an observation's stored metrics with its benchmark's derived metrics into
+// one flat object. The consumer can't tell stored from derived — that split lives only in
+// sample_schema (spec §4). The evaluation context is WIDENED (§10) beyond the observation's own
+// created_at to include its run's timing, so relative-time metrics (elapsed_ms = created_at −
+// run.started_at) are a declared JSON Logic expression, not a chart hack.
 import type { SampleSchema } from "../types";
 import { applyRule } from "./evaluator";
+
+/** The widened data context a derived expression may reference via `var`. */
+export interface DerivedContext {
+  created_at: number;
+  run: {
+    started_at: number | null;
+    ended_at: number | null;
+  };
+}
 
 function parseStored(metricsJson: string | null): Record<string, unknown> {
   if (metricsJson === null) return {};
@@ -19,20 +30,22 @@ function parseStored(metricsJson: string | null): Record<string, unknown> {
 
 /**
  * Merge stored + derived. Derived values (schema-controlled) win on name collision. A per-row
- * expression error omits that one field rather than failing the read (never a 5xx — ADR-014).
- * Returns null when there is nothing to emit, so the serializer can omit `metrics` entirely.
+ * expression error, or a non-finite result, omits that one field rather than failing the read
+ * (never a 5xx — ADR-014). Returns null when nothing is emitted, so the serializer omits `metrics`.
  */
 export function computeMetrics(
   metricsJson: string | null,
   schema: SampleSchema,
-  createdAt: number,
+  ctx: DerivedContext,
 ): Record<string, unknown> | null {
+  const data = {
+    created_at: ctx.created_at,
+    run: { started_at: ctx.run.started_at, ended_at: ctx.run.ended_at },
+  };
   const merged: Record<string, unknown> = { ...parseStored(metricsJson) };
   for (const d of schema.derived) {
     try {
-      const value = applyRule(d.expr, { created_at: createdAt });
-      // Derived metrics are numeric. A non-finite/non-numeric result (NaN, Infinity, a division by
-      // zero) is omitted rather than serialized as JSON null — same as a thrown expression.
+      const value = applyRule(d.expr, data);
       if (typeof value === "number" && Number.isFinite(value)) {
         merged[d.name] = value;
       }

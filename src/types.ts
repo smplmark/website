@@ -1,18 +1,99 @@
-// Domain row types (as stored in D1; snake_case columns) and the sample_schema shape.
-// These are the shared vocabulary the whole codebase speaks.
+// Domain row types (as stored in D1; snake_case columns), the sample_schema shape, and the
+// resolved auth context. This is the shared vocabulary the whole codebase speaks.
 
-export type Visibility = "published" | "private";
+// ── Enums (SCREAMING_SNAKE_CASE on the wire, per ADR-014) ────────────────────
+
+/** Benchmark lifecycle. PRIVATE → PUBLISHED (one-way) → WITHDRAWN (one-way). */
+export type Status = "PRIVATE" | "PUBLISHED" | "WITHDRAWN";
+export const STATUSES: readonly Status[] = ["PRIVATE", "PUBLISHED", "WITHDRAWN"];
+
+/** API-key scope. Grants read+write on the scoped resource and its whole subtree. */
+export type ScopeType = "ACCOUNT" | "BENCHMARK" | "RUN";
+export const SCOPE_TYPES: readonly ScopeType[] = ["ACCOUNT", "BENCHMARK", "RUN"];
+
+/** Login method. */
+export type Provider = "GOOGLE" | "MICROSOFT" | "PASSWORD";
+export const PROVIDERS: readonly Provider[] = ["GOOGLE", "MICROSOFT", "PASSWORD"];
+
+/** Account membership role. v1 has only OWNER. */
+export type Role = "OWNER";
+export const ROLES: readonly Role[] = ["OWNER"];
+
+// ── Identity & tenancy ───────────────────────────────────────────────────────
+
+export interface UserRow {
+  id: string;
+  email: string;
+  /** 0/1 boolean. Surfaced as `verified` (no is_ prefix). */
+  email_verified: number;
+  display_name: string | null;
+  created_at: number;
+}
+
+export interface UserIdentityRow {
+  id: string;
+  user_id: string;
+  provider: Provider;
+  /** OIDC subject, or null for PASSWORD. */
+  provider_subject: string | null;
+  /** PBKDF2 hash string, or null unless PASSWORD. Never surfaced. */
+  password_hash: string | null;
+  created_at: number;
+}
 
 export interface AccountRow {
   id: string;
   key: string;
   name: string;
-  /** Publisher blurb — who they are. Nullable. */
   description: string | null;
-  /** Publisher homepage URL. Nullable. */
   url: string | null;
   created_at: number;
 }
+
+export interface AccountUserRow {
+  account_id: string;
+  user_id: string;
+  role: Role;
+  created_at: number;
+}
+
+export interface EmailVerificationRow {
+  id: string;
+  user_id: string;
+  token_hash: string;
+  expires_at: number;
+  consumed_at: number | null;
+  created_at: number;
+}
+
+export interface SessionRow {
+  id: string;
+  user_id: string;
+  account_id: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+}
+
+// ── API keys ─────────────────────────────────────────────────────────────────
+
+export interface ApiKeyRow {
+  id: string;
+  account_id: string;
+  name: string;
+  scope_type: ScopeType;
+  scope_ref: string | null;
+  key_hash: string;
+  key_encrypted: string;
+  prefix: string;
+  expires_at: number | null;
+  created_by_user_id: string | null;
+  revoked_at: number | null;
+  last_used_at: number | null;
+  created_at: number;
+}
+
+// ── Benchmark hierarchy ──────────────────────────────────────────────────────
 
 export interface BenchmarkRow {
   id: string;
@@ -20,11 +101,12 @@ export interface BenchmarkRow {
   key: string;
   name: string;
   description: string | null;
-  visibility: Visibility;
-  /** Longer-form overview of what the benchmark measures. Nullable. */
   about: string | null;
-  /** How the data is produced and how metrics are computed. Nullable. */
   methodology: string | null;
+  status: Status;
+  published_at: number | null;
+  withdrawn_at: number | null;
+  withdrawal_reason: string | null;
   /** JSON string of a SampleSchema. */
   sample_schema: string;
   created_at: number;
@@ -38,8 +120,6 @@ export interface TargetRow {
   name: string;
   /** JSON string or null. */
   details: string | null;
-  /** Hash of the ingest secret. Never surfaced on the wire. */
-  secret_hash: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -51,11 +131,17 @@ export interface RunRow {
   name: string | null;
   /** JSON string or null. */
   details: string | null;
+  started_at: number | null;
+  /** NULL ⇒ live. */
+  ended_at: number | null;
+  invalidated_at: number | null;
+  invalidation_reason: string | null;
+  invalidated_by_user_id: string | null;
   created_at: number;
   updated_at: number;
 }
 
-export interface SampleRow {
+export interface ObservationRow {
   /** rowid — database-assigned INTEGER; stringified on the wire. */
   id: number;
   run_id: string;
@@ -77,21 +163,59 @@ export type JsonLogicRule = unknown;
 export interface MetricDecl {
   name: string;
   type: string;
+  /** Cosmetic — editable after publish. */
   unit?: string;
-  /** Human-readable description, surfaced on the benchmark page. */
+  /** Human-readable description, surfaced on the benchmark page. Cosmetic — editable after publish. */
   description?: string;
 }
 
-/** A numeric value computed on read from a JSON Logic expression. */
+/** A numeric value computed on read from a JSON Logic expression against the widened context. */
 export interface DerivedDecl {
   name: string;
+  /** Cosmetic — editable after publish. */
   unit?: string;
+  /** Semantic core — frozen on publish. */
   expr: JsonLogicRule;
-  /** Human-readable description, surfaced on the benchmark page. */
+  /** Human-readable description, surfaced on the benchmark page. Cosmetic — editable after publish. */
   description?: string;
+}
+
+/** How the site's chart should render this benchmark by default. Semantic core — frozen on publish. */
+export type XKind = "TIME" | "NUMBER" | "CATEGORY";
+export const X_KINDS: readonly XKind[] = ["TIME", "NUMBER", "CATEGORY"];
+
+export interface ChartDecl {
+  /** A metric name, or "created_at", or null (scalar / no x-axis). */
+  x: string | null;
+  /** A metric name. */
+  y: string;
+  /** Optional; inferred from `x` when absent. */
+  x_kind?: XKind;
 }
 
 export interface SampleSchema {
   metrics: MetricDecl[];
   derived: DerivedDecl[];
+  /** Optional default chart declaration; the visitor may override at chart time. */
+  chart?: ChartDecl;
+}
+
+// ── Auth context ─────────────────────────────────────────────────────────────
+
+/**
+ * The uniform authenticated principal both credential sources resolve to, so handlers never branch
+ * on method. A session OWNER normalizes to ACCOUNT scope (full-account authority). `scope_type` /
+ * `scope_ref` are the *effective* authority used by the authorization layer (§7).
+ */
+export interface AuthContext {
+  source: "API_KEY" | "SESSION";
+  account_id: string;
+  scope_type: ScopeType;
+  scope_ref: string | null;
+  /** The acting user, for SESSION credentials; null for API_KEY. */
+  user_id: string | null;
+  /** The account role, for SESSION credentials; null for API_KEY. */
+  role: Role | null;
+  /** The session id (jti), for SESSION credentials; null for API_KEY. Used by logout. */
+  session_id: string | null;
 }
