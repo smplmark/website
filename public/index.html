@@ -4,16 +4,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>smplmark — benchmark host</title>
-  <meta name="description" content="smplmark hosts benchmarks. Publishers upload data; visitors review benchmarks from publishers they trust." />
+  <meta name="description" content="smplmark hosts benchmarks. Publishers upload benchmark data; visitors review benchmarks from publishers they choose to trust." />
+  <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
   <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body>
   <header class="site">
     <div class="wrap">
-      <a class="brand" href="/">smpl<span>mark</span></a>
+      <a class="brand" href="/"><picture>
+        <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
+        <img src="/img/logo-dark.png" alt="smplmark" width="108" height="22" />
+      </picture></a>
       <nav>
         <a href="/benchmarks">Benchmarks</a>
-        <a href="/benchmarks/latency">Scheduler latency</a>
+        <a href="/about">About</a>
       </nav>
     </div>
   </header>
@@ -29,28 +35,24 @@
           fetchable as JSON or downloadable as CSV.
         </p>
         <a class="btn primary" href="/benchmarks">Browse benchmarks</a>
-        <a class="btn" href="/benchmarks/latency">See the latency chart</a>
+        <a class="btn" href="/about">About smplmark</a>
       </section>
 
-      <h2 class="section">The first benchmark</h2>
-      <div class="grid">
-        <a class="card" href="/benchmarks/latency">
-          <h3>Scheduler Latency <span class="pill published">published</span></h3>
-          <p>How far past the top of the minute each scheduler's beacon actually
-          arrives — the scheduling <em>skew</em>, computed on read from the arrival
-          timestamp.</p>
-          <div class="meta">skew_ms · derived · one target per scheduler</div>
-        </a>
-      </div>
+      <h2 class="section">Recent benchmarks</h2>
+      <div id="benchmark-grid" class="grid"></div>
+      <div id="status" class="status"></div>
     </div>
   </main>
 
   <footer class="site">
     <div class="wrap">
-      <span>smplmark</span>
-      <a href="/api/v1/benchmarks">API</a>
+      <span>smplmark™</span>
+      <a href="/about">About</a>
+      <a href="/benchmarks">Benchmarks</a>
       <a href="https://github.com/smplmark/website">Source</a>
     </div>
   </footer>
+
+  <script src="/js/benchmark-list.js"></script>
 </body>
 </html>

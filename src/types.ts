@@ -7,6 +7,10 @@ export interface AccountRow {
   id: string;
   key: string;
   name: string;
+  /** Publisher blurb — who they are. Nullable. */
+  description: string | null;
+  /** Publisher homepage URL. Nullable. */
+  url: string | null;
   created_at: number;
 }
 
@@ -17,6 +21,10 @@ export interface BenchmarkRow {
   name: string;
   description: string | null;
   visibility: Visibility;
+  /** Longer-form overview of what the benchmark measures. Nullable. */
+  about: string | null;
+  /** How the data is produced and how metrics are computed. Nullable. */
+  methodology: string | null;
   /** JSON string of a SampleSchema. */
   sample_schema: string;
   created_at: number;
@@ -70,6 +78,8 @@ export interface MetricDecl {
   name: string;
   type: string;
   unit?: string;
+  /** Human-readable description, surfaced on the benchmark page. */
+  description?: string;
 }
 
 /** A numeric value computed on read from a JSON Logic expression. */
@@ -77,6 +87,8 @@ export interface DerivedDecl {
   name: string;
   unit?: string;
   expr: JsonLogicRule;
+  /** Human-readable description, surfaced on the benchmark page. */
+  description?: string;
 }
 
 export interface SampleSchema {

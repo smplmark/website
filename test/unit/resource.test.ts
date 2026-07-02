@@ -18,12 +18,25 @@ import type {
 const T0 = Date.UTC(2026, 6, 1, 9, 0, 0);
 
 describe("serializeAccount", () => {
-  it("emits key/name and ISO created_at", () => {
-    const row: AccountRow = { id: "a1", key: "smplkit", name: "smplkit", created_at: T0 };
+  it("emits key/name/description/url and ISO created_at", () => {
+    const row: AccountRow = {
+      id: "a1",
+      key: "smplkit",
+      name: "smplkit",
+      description: "we build things",
+      url: "https://smplkit.com",
+      created_at: T0,
+    };
     expect(serializeAccount(row)).toEqual({
       type: "account",
       id: "a1",
-      attributes: { key: "smplkit", name: "smplkit", created_at: "2026-07-01T09:00:00.000Z" },
+      attributes: {
+        key: "smplkit",
+        name: "smplkit",
+        description: "we build things",
+        url: "https://smplkit.com",
+        created_at: "2026-07-01T09:00:00.000Z",
+      },
     });
   });
 });
@@ -36,6 +49,8 @@ describe("serializeBenchmark", () => {
       key: "scheduler-latency",
       name: "Scheduler Latency",
       description: null,
+      about: "the long story",
+      methodology: "how it's measured",
       visibility: "published",
       sample_schema: JSON.stringify({ metrics: [], derived: [] }),
       created_at: T0,
@@ -44,6 +59,8 @@ describe("serializeBenchmark", () => {
     const out = serializeBenchmark(row);
     expect(out.type).toBe("benchmark");
     expect(out.attributes.account).toBe("a1");
+    expect(out.attributes.about).toBe("the long story");
+    expect(out.attributes.methodology).toBe("how it's measured");
     expect(out.attributes.sample_schema).toEqual({ metrics: [], derived: [] });
     expect(out.attributes).not.toHaveProperty("account_id");
     expect(out.attributes.created_at).toBe("2026-07-01T09:00:00.000Z");

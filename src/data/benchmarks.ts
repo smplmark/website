@@ -7,6 +7,8 @@ export interface CreateBenchmarkInput {
   key: string;
   name: string;
   description: string | null;
+  about?: string | null;
+  methodology?: string | null;
   visibility: Visibility;
   sample_schema: SampleSchema;
 }
@@ -22,6 +24,8 @@ export async function createBenchmark(
     key: input.key,
     name: input.name,
     description: input.description,
+    about: input.about ?? null,
+    methodology: input.methodology ?? null,
     visibility: input.visibility,
     sample_schema: JSON.stringify(input.sample_schema),
     created_at: now,
@@ -30,7 +34,7 @@ export async function createBenchmark(
   try {
     await db
       .prepare(
-        "INSERT INTO benchmark (id, account_id, key, name, description, visibility, sample_schema, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO benchmark (id, account_id, key, name, description, about, methodology, visibility, sample_schema, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       )
       .bind(
         row.id,
@@ -38,6 +42,8 @@ export async function createBenchmark(
         row.key,
         row.name,
         row.description,
+        row.about,
+        row.methodology,
         row.visibility,
         row.sample_schema,
         row.created_at,
@@ -115,6 +121,8 @@ export async function listBenchmarks(
 export interface UpdateBenchmarkPatch {
   name?: string;
   description?: string | null;
+  about?: string | null;
+  methodology?: string | null;
   visibility?: Visibility;
   sample_schema?: SampleSchema;
 }
@@ -133,6 +141,9 @@ export async function updateBenchmark(
     name: patch.name ?? existing.name,
     description:
       patch.description !== undefined ? patch.description : existing.description,
+    about: patch.about !== undefined ? patch.about : existing.about,
+    methodology:
+      patch.methodology !== undefined ? patch.methodology : existing.methodology,
     visibility: patch.visibility ?? existing.visibility,
     sample_schema:
       patch.sample_schema !== undefined
@@ -142,11 +153,13 @@ export async function updateBenchmark(
   };
   await db
     .prepare(
-      "UPDATE benchmark SET name=?, description=?, visibility=?, sample_schema=?, updated_at=? WHERE id=?",
+      "UPDATE benchmark SET name=?, description=?, about=?, methodology=?, visibility=?, sample_schema=?, updated_at=? WHERE id=?",
     )
     .bind(
       updated.name,
       updated.description,
+      updated.about,
+      updated.methodology,
       updated.visibility,
       updated.sample_schema,
       updated.updated_at,

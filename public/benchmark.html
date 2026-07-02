@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Benchmark — smplmark</title>
+  <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
+  <link rel="stylesheet" href="/vendor/uPlot.min.css" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="/"><picture>
+        <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
+        <img src="/img/logo-dark.png" alt="smplmark" width="108" height="22" />
+      </picture></a>
+      <nav>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/about">About</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <div class="detail-head">
+        <h1 id="bm-name">Loading…</h1>
+        <p class="tagline" id="bm-tagline"></p>
+        <p class="byline" id="bm-byline"></p>
+      </div>
+
+      <div id="tabs-wrap" hidden>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="data">Data</button>
+          <button class="tab" data-tab="methodology">Methodology</button>
+          <button class="tab" data-tab="publisher">Publisher</button>
+        </div>
+
+        <section class="tab-panel active" data-panel="overview">
+          <div class="prose" id="overview-about"></div>
+          <h2 class="section">Metrics</h2>
+          <div class="metrics" id="overview-metrics"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="data">
+          <div class="controls">
+            <div class="field">
+              <label for="target">Target</label>
+              <select id="target"></select>
+            </div>
+            <div class="field" id="metric-field" hidden>
+              <label for="metric">Metric</label>
+              <select id="metric"></select>
+            </div>
+            <div class="field">
+              <label for="range">Range</label>
+              <select id="range">
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+              </select>
+            </div>
+            <div class="spacer"></div>
+            <div class="links">
+              <button class="btn" id="csv">Download CSV</button>
+              <a class="btn" id="json" href="#" target="_blank" rel="noopener">JSON</a>
+            </div>
+          </div>
+          <div class="chart-panel">
+            <div id="chart"></div>
+            <div id="empty" class="empty" hidden>No samples in this window.</div>
+          </div>
+          <div id="chart-status" class="status"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="methodology">
+          <div class="prose" id="methodology-body"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="publisher">
+          <div class="publisher" id="publisher-body"></div>
+        </section>
+      </div>
+
+      <div id="load-status" class="status"></div>
+    </div>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <span>smplmark™</span>
+      <a href="/about">About</a>
+      <a href="/benchmarks">Benchmarks</a>
+      <a href="https://github.com/smplmark/website">Source</a>
+    </div>
+  </footer>
+
+  <script src="/vendor/uPlot.iife.min.js"></script>
+  <script src="/js/benchmark.js"></script>
+</body>
+</html>

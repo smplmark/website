@@ -1,4 +1,4 @@
--- smplmark local dev seed. Apply with:
+-- smplmark local dev seed (generated). Apply with:
 --   wrangler d1 execute smplmark --local --file scripts/seed.sql
 -- Dev ingest secrets (plaintext, local only — never commit real secrets):
 --   scheduler-a: dev-secret-scheduler-a
@@ -6,9 +6,15 @@
 
 DELETE FROM sample; DELETE FROM run; DELETE FROM target; DELETE FROM benchmark; DELETE FROM account;
 
-INSERT INTO account (id, key, name, created_at) VALUES ('acct-smplkit', 'smplkit', 'smplkit', 1751364000000);
+INSERT INTO account (id, key, name, description, url, created_at) VALUES ('acct-smplkit', 'smplkit', 'smplkit', 'smplkit builds developer infrastructure — configuration, feature flags, logging, and audit as independently deployable services. Scheduler Latency is smplkit dogfooding smplmark to keep its own schedulers honest.', 'https://smplkit.com', 1751364000000);
 
-INSERT INTO benchmark (id, account_id, key, name, description, visibility, sample_schema, created_at, updated_at) VALUES ('bench-scheduler-latency', 'acct-smplkit', 'scheduler-latency', 'Scheduler Latency', 'How far past the top of the minute each scheduler''s beacon actually arrives.', 'published', '{"metrics":[],"derived":[{"name":"skew_ms","unit":"ms","expr":{"minute_offset_ms":[{"var":"created_at"}]}}]}', 1751364000000, 1751364000000);
+INSERT INTO benchmark (id, account_id, key, name, description, about, methodology, visibility, sample_schema, created_at, updated_at) VALUES ('bench-scheduler-latency', 'acct-smplkit', 'scheduler-latency', 'Scheduler Latency', 'How punctual are scheduled jobs, really?', 'Scheduler Latency measures how close to the top of each minute a scheduled job actually fires.
+
+Every target is a scheduler set to run once a minute. When it fires, it sends a bare-timestamp beacon to smplmark — no payload, just the fact that it ran. The skew (milliseconds past the minute the beacon landed) is derived from that arrival time when the data is read. A punctual scheduler hugs zero; a busy or throttled one drifts later into the minute.', 'Each target POSTs an empty beacon to its ingest endpoint on a one-minute cron. The server stamps the UTC arrival time (epoch-ms) and stores nothing else — no interpretation is baked into the sample.
+
+skew_ms is computed on read as arrival − floor(arrival ÷ 60000) × 60000: the milliseconds elapsed since the immediately-preceding minute boundary. Because it is computed on read, the definition can be refined without migrating a single row.
+
+v1 serves every raw beacon (no aggregation or downsampling), capped at a 30-day query window.', 'published', '{"metrics":[],"derived":[{"name":"skew_ms","unit":"ms","description":"Milliseconds past the top of the minute the beacon arrived. Lower is more punctual; 0 means the job fired exactly on the minute boundary.","expr":{"minute_offset_ms":[{"var":"created_at"}]}}]}', 1751364000000, 1751364000000);
 
 INSERT INTO target (id, benchmark_id, key, name, details, secret_hash, created_at, updated_at) VALUES ('tgt-scheduler-a', 'bench-scheduler-latency', 'scheduler-a', 'Scheduler A', NULL, 'c712cd2f63013bf6f31cea3284212828f99212464b244617c660597fdcb3ac8e', 1751364000000, 1751364000000);
 INSERT INTO run (id, target_id, key, name, details, created_at, updated_at) VALUES ('run-scheduler-a', 'tgt-scheduler-a', 'default', 'default', NULL, 1751364000000, 1751364000000);

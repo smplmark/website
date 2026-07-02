@@ -4,13 +4,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Not found — smplmark</title>
+  <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png" />
+  <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
   <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body>
   <header class="site">
     <div class="wrap">
-      <a class="brand" href="/">smpl<span>mark</span></a>
-      <nav><a href="/benchmarks">Benchmarks</a></nav>
+      <a class="brand" href="/"><picture>
+        <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
+        <img src="/img/logo-dark.png" alt="smplmark" width="108" height="22" />
+      </picture></a>
+      <nav>
+        <a href="/benchmarks">Benchmarks</a>
+        <a href="/about">About</a>
+      </nav>
     </div>
   </header>
   <main>

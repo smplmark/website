@@ -43,6 +43,15 @@ describe("validateSampleSchema", () => {
     expect(out.derived[0].unit).toBeUndefined();
   });
 
+  it("carries per-metric descriptions through", () => {
+    const out = validateSampleSchema({
+      metrics: [{ name: "n", type: "number", description: "a stored value" }],
+      derived: [{ name: "d", expr: {}, description: "a derived value" }],
+    });
+    expect(out.metrics[0].description).toBe("a stored value");
+    expect(out.derived[0].description).toBe("a derived value");
+  });
+
   it.each([
     [null, "null value"],
     [["a"], "array value"],
@@ -54,10 +63,12 @@ describe("validateSampleSchema", () => {
     [{ metrics: [{ name: "", type: "number" }] }, "metric empty name"],
     [{ metrics: [{ name: "x" }] }, "metric missing type"],
     [{ metrics: [{ name: "x", type: "number", unit: 5 }] }, "metric bad unit"],
+    [{ metrics: [{ name: "x", type: "number", description: 5 }] }, "metric bad description"],
     [{ derived: [1] }, "derived not an object"],
     [{ derived: [{ name: "x" }] }, "derived missing expr"],
     [{ derived: [{ expr: {} }] }, "derived missing name"],
     [{ derived: [{ name: "x", expr: {}, unit: 5 }] }, "derived bad unit"],
+    [{ derived: [{ name: "x", expr: {}, description: 5 }] }, "derived bad description"],
     [
       { metrics: [{ name: "dup", type: "number" }, { name: "dup", type: "number" }] },
       "duplicate within metrics",

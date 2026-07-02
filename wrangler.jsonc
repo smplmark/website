@@ -4,9 +4,13 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
 
-  // Serve the Worker on the production custom domain. Cloudflare provisions the DNS record + TLS
-  // cert automatically (requires smplmark.org to be an active zone in the account).
-  "routes": [{ "pattern": "www.smplmark.org", "custom_domain": true }],
+  // Serve the Worker on both the apex and www custom domains. Cloudflare provisions the DNS
+  // records + TLS certs automatically (requires smplmark.org to be an active zone). The Worker
+  // 301-redirects the apex to www for a single canonical host.
+  "routes": [
+    { "pattern": "www.smplmark.org", "custom_domain": true },
+    { "pattern": "smplmark.org", "custom_domain": true }
+  ],
 
   // Static Assets: the ./public dir is served directly for every path EXCEPT /api/*.
   // For /api/* the Worker runs first (Hono handles the JSON:API); the Worker also falls
@@ -14,7 +18,10 @@
   "assets": {
     "directory": "./public/",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"],
+    // The Worker runs first for every request so it can (a) redirect the apex to www and
+    // (b) serve the data-driven /benchmarks/{key} shell. Non-matching paths fall through to
+    // static assets via env.ASSETS.fetch().
+    "run_worker_first": true,
     "not_found_handling": "404-page"
   },
 

@@ -40,6 +40,12 @@ export function validateSampleSchema(value: unknown): SampleSchema {
     if (mm.unit !== undefined) {
       decl.unit = nonEmptyString(mm.unit, `sample_schema.metrics[${i}].unit`);
     }
+    if (mm.description !== undefined) {
+      decl.description = nonEmptyString(
+        mm.description,
+        `sample_schema.metrics[${i}].description`,
+      );
+    }
     return decl;
   });
 
@@ -54,6 +60,12 @@ export function validateSampleSchema(value: unknown): SampleSchema {
     };
     if (dd.unit !== undefined) {
       decl.unit = nonEmptyString(dd.unit, `sample_schema.derived[${i}].unit`);
+    }
+    if (dd.description !== undefined) {
+      decl.description = nonEmptyString(
+        dd.description,
+        `sample_schema.derived[${i}].description`,
+      );
     }
     return decl;
   });

@@ -28,6 +28,8 @@ export function serializeAccount(row: AccountRow): ResourceObject {
     attributes: {
       key: row.key,
       name: row.name,
+      description: row.description,
+      url: row.url,
       created_at: iso(row.created_at),
     },
   };
@@ -42,6 +44,8 @@ export function serializeBenchmark(row: BenchmarkRow): ResourceObject {
       key: row.key,
       name: row.name,
       description: row.description,
+      about: row.about,
+      methodology: row.methodology,
       visibility: row.visibility,
       sample_schema: parseSampleSchema(row.sample_schema),
       created_at: iso(row.created_at),

@@ -29,10 +29,12 @@ npm run dev                        # wrangler dev — http://localhost:8787
 
 Then open:
 
-- `http://localhost:8787/` — home
+- `http://localhost:8787/` — home (data-driven "Recent benchmarks" grid)
 - `http://localhost:8787/benchmarks` — published benchmarks
-- `http://localhost:8787/benchmarks/latency` — the skew chart (defaults to the last 24h UTC; the
-  seeded demo data is dated ~2026-07-01T10:00–12:00Z, so set the date inputs there to view it locally)
+- `http://localhost:8787/benchmarks/scheduler-latency` — the data-driven benchmark page (Overview,
+  Data, Methodology, Publisher tabs). The Data chart defaults to the last 24h UTC; the seeded demo
+  data is dated ~2026-07-01T10:00–12:00Z, so pick "Last 30 days" (the widest range) to view it locally.
+- `http://localhost:8787/about` — about smplmark
 
 ### Dev ingest secrets
 

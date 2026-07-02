@@ -33,6 +33,8 @@ benchmarks.post("/", adminAuth, async (c) => {
   const key = requireString(attrs, "key");
   const name = requireString(attrs, "name");
   const description = optionalStringOrNull(attrs, "description") ?? null;
+  const about = optionalStringOrNull(attrs, "about") ?? null;
+  const methodology = optionalStringOrNull(attrs, "methodology") ?? null;
   const visibility = optionalEnum(attrs, "visibility", VISIBILITY) ?? "private";
   const sample_schema =
     "sample_schema" in attrs
@@ -49,6 +51,8 @@ benchmarks.post("/", adminAuth, async (c) => {
     key,
     name,
     description,
+    about,
+    methodology,
     visibility,
     sample_schema,
   });
@@ -87,6 +91,10 @@ benchmarks.patch("/:id", adminAuth, async (c) => {
   if ("name" in attrs) patch.name = requireString(attrs, "name");
   if ("description" in attrs) {
     patch.description = optionalStringOrNull(attrs, "description") ?? null;
+  }
+  if ("about" in attrs) patch.about = optionalStringOrNull(attrs, "about") ?? null;
+  if ("methodology" in attrs) {
+    patch.methodology = optionalStringOrNull(attrs, "methodology") ?? null;
   }
   if ("visibility" in attrs) {
     patch.visibility = optionalEnum(attrs, "visibility", VISIBILITY);
