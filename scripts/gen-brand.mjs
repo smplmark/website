@@ -51,6 +51,7 @@ writeFileSync("public/img/favicon.svg", faviconSvgAdaptive());
 // PNG fallbacks: transparent, dark-tab colors (light "s" + accent "m").
 const favBuf = Buffer.from(faviconSvgStatic(TEXT_DARK, ACCENT));
 await sharp(favBuf).resize(180, 180).png().toFile("public/img/apple-touch-icon.png");
+await sharp(favBuf).resize(120, 120).png().toFile("public/img/favicon-120.png");
 await sharp(favBuf).resize(32, 32).png().toFile("public/img/favicon-32.png");
 await sharp(favBuf).resize(16, 16).png().toFile("public/img/favicon-16.png");
 
