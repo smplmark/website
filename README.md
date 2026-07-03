@@ -1,157 +1,81 @@
-# smplmark
+# smplmark — website
 
-A general-purpose, multi-tenant, publicly self-serve **benchmark host** on Cloudflare Workers + D1.
-A stranger can sign up, define benchmarks / targets / runs, upload observations (by hand or via API),
-and publish — with no special treatment relative to the first-party smplkit account. smplmark does
-not validate the truth of the data, only its shape; once published, data is **append-only** and
-cannot be quietly altered or removed.
+> **This is the `website` repo** — the public marketing site and the **published-benchmark viewer**,
+> served as a single Cloudflare Worker on **www.smplmark.org** (the apex redirects here). It holds no
+> API and no database. The logged-in console, authentication, and the JSON:API live in the separate
+> **[`app`](https://github.com/smplmark/app)** repo on **app.smplmark.org**; the viewer reads published
+> data from that API cross-origin (the app answers CORS for this origin).
 
-The first real benchmark is smplkit's own **scheduler-latency**: each scheduler POSTs a bare-timestamp
-beacon to a live run using a scoped API key; `skew_ms` (how far past the top of the minute the beacon
-arrived) is **computed on read** from the timestamp.
+smplmark is a general-purpose, multi-tenant, publicly self-serve **benchmark host**. This site is its
+public face: the marketing pages and the data-driven page for every published benchmark. The first
+real benchmark is smplkit's own **scheduler-latency** (`skew_ms`, computed on read from a beacon
+timestamp).
 
-- **Stack:** Cloudflare Workers + D1 (serverless SQLite), TypeScript, [Hono](https://hono.dev),
-  [json-logic-js](https://github.com/jwadhams/json-logic-js) (derived metrics),
-  [jose](https://github.com/panva/jose) (JWT + OIDC), [uPlot](https://github.com/leeoniya/uPlot)
-  (charts), [Scalar](https://scalar.com) (API reference). No build step for the static UI.
-- **API:** JSON:API (`application/vnd.api+json`), singular resource `type`, plural paths, parent refs
-  as bare id attributes (no `relationships`), `snake_case` everywhere. Follows the smplkit API
-  standard (`~/projects/app/docs/adrs/ADR-014-api-standards.md`).
+- **Stack:** Cloudflare Workers (static assets + a thin routing Worker), TypeScript,
+  [uPlot](https://github.com/leeoniya/uPlot) (charts). No build step — the UI is plain HTML/CSS/JS
+  under `public/`.
 
-## Data model
+## What this Worker does
 
-`account (1)→(N) benchmark (1)→(N) target (1)→(N) run (1)→(N) observation`, plus identity
-(`user`, `user_identity`, `account_user`, `session`, `email_verification`, `invitation`) and `api_key`.
+`src/index.ts` is a small shim in front of the static assets:
 
-- **Roles (per `account_user`):** `VIEWER < MEMBER < ADMIN < OWNER` (mirrors smplkit). VIEWER reads;
-  MEMBER edits benchmarks/targets/runs; ADMIN also manages members, invitations, API keys, and
-  account settings; OWNER is the account creator (one per account, immutable). Role gating applies to
-  session credentials — an API key's authority is bounded by its scope. Members are invited by email
-  (`invitation`, 7-day token) via Resend and join on acceptance; a user in more than one account can
-  switch between them.
+1. Redirects the apex (`smplmark.org`) to the canonical `www` host.
+2. Serves the data-driven shell (`public/benchmark.html`) for every `/benchmarks/{key}`.
+3. Falls through to static assets for everything else (marketing pages, viewer JS/CSS, images).
 
-- **Status lifecycle:** `PRIVATE → PUBLISHED → WITHDRAWN` (each transition one-way). PRIVATE is a
-  fully-mutable workspace; PUBLISHED is world-visible and append-only; WITHDRAWN keeps the data
-  public behind a "withdrawn on X because Y" banner. Invalidating a run is an annotation, never a
-  removal — invalidated runs stay visible, flagged.
-- **Interpretation freeze:** publishing freezes the semantic core of `sample_schema` (derived
-  expressions + chart mapping); only cosmetic labels and prose stay editable.
+Pages: `/` (home), `/benchmarks` (list), `/benchmarks/{key}` (data-driven benchmark page), `/about`,
+`/terms`, `/privacy`.
+
+## Reading data from the app API
+
+The viewer (`public/js/benchmark.js`, `public/js/benchmark-list.js`) fetches published benchmarks,
+targets, runs, and observations from the app's public API. It resolves the API base at runtime
+(`apiBase()`): on `www`/apex it uses `https://app.smplmark.org`; otherwise it falls back to
+same-origin. For local development against a locally-running app Worker, append `?api=` to the URL
+(e.g. `http://localhost:8787/benchmarks/scheduler-latency?api=http://localhost:8788`) or set
+`window.SM_API_BASE`. Only world-visible (PUBLISHED / WITHDRAWN) data is reachable — these are
+unauthenticated public reads.
 
 ## Local development
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars     # local secrets for `wrangler dev` (gitignored)
-npm run cf-typegen                 # (re)generate worker-configuration.d.ts
-
-npm run db:migrate:local           # apply migrations to the local D1
-node scripts/gen-seed.mjs > scripts/seed.sql   # (re)generate the seed (crypto-derived columns)
-npm run db:seed:local              # seed smplkit + scheduler-latency (published) + demo data
-
-npm run dev                        # wrangler dev — http://localhost:8787
+npm run dev          # wrangler dev — http://localhost:8787 (marketing + viewer)
 ```
 
-Pages: `/` (home), `/benchmarks`, `/benchmarks/scheduler-latency` (data-driven benchmark page),
-`/about`, `/login` · `/signup` · `/account` (dashboard) · `/account/{benchmarks,api-keys,users,
-settings,profile}` (self-serve console), `/accept-invitation`, `/verify-email`, `/api-reference`
-(Scalar).
-
-**Hosting (production):** one Worker, host-partitioned (`src/app.ts`). `app.smplmark.org` serves the
-console + auth + API; `www.smplmark.org` serves the marketing site + published `/benchmarks`; the
-apex 301-redirects to www. Non-production hosts (localhost, previews) serve everything. IP-based rate
-limiting (Cloudflare `ratelimit` bindings) guards login / register / invite / contact.
-
-**Dev credentials** (local only — printed at the top of the generated `scripts/seed.sql`): log in at
-`/login` with `dev@smplkit.test` / `smplmark-dev-password`, or POST a beacon with the seeded
-run-scoped API key:
-
-```bash
-curl -X POST http://localhost:8787/api/v1/observations \
-  -H "Authorization: Bearer sm_api_devlocalkeyDEADBEEF00000000000000000000" \
-  -H "Content-Type: application/vnd.api+json" \
-  -d '{"data":{"type":"observation","attributes":{"run":"run-scheduler-a"}}}'
-```
-
-## API
-
-All under `/api/v1`. Two credential sources on the same `Authorization: Bearer` header, dispatched by
-prefix: an **API key** (`sm_api_…`, scoped ACCOUNT/BENCHMARK/RUN) or a **session JWT** (everything
-else). Public reads of PUBLISHED/WITHDRAWN benchmarks need no credential; PRIVATE resources require a
-covering credential. Cross-tenant references return **404** (never leaking existence).
-
-| Group | Endpoints |
-| --- | --- |
-| Auth (JSON) | `POST /auth/register`, `/auth/login`, `/auth/verify-email`, `/auth/resend-verification`, `/auth/logout`; `GET /auth/oidc/{google\|microsoft}`, `/auth/callback/{provider}` |
-| Users / Account | `GET·PUT /users/current`, `GET·PUT /accounts/current`, `GET /accounts/{id}`, `GET /account_users` |
-| API keys | `POST·GET /api_keys`, `GET /api_keys/{id}` (reveal), `POST /api_keys/{id}/actions/rotate`, `DELETE /api_keys/{id}` (revoke) |
-| Benchmarks | `POST·GET /benchmarks`, `GET·PUT·DELETE /benchmarks/{id}`, `POST /benchmarks/{id}/actions/publish`, `.../actions/withdraw` |
-| Targets | `POST·GET /targets` (`filter[benchmark]` required), `GET·PUT·DELETE /targets/{id}` |
-| Runs | `POST·GET /runs` (`filter[target]` required), `GET·PUT·DELETE /runs/{id}`, `POST /runs/{id}/actions/end`, `.../actions/invalidate` |
-| Observations | `POST /observations` (flat; `run` is a required body field), `GET /observations` (exactly one of `filter[run\|target\|benchmark]`; optional `filter[created_at]` range; `Accept: text/csv` for CSV) |
-
-`sort` (single field, `-` prefix, per-endpoint default + allowed set), `page[number]`/`page[size]`
-(default/cap 1000), and `meta[total]` are honored on read-many endpoints. There is deliberately **no
-`DELETE` on observations**, and no delete on runs/targets/benchmarks once PUBLISHED — the append-only
-stance is structural, not cosmetic.
-
-- **OpenAPI:** generated from the routes at the un-versioned `/api/openapi.json`; rendered by Scalar
-  at `/api-reference`.
-
-## Credentials & secrets
-
-Runtime secrets are Worker bindings (`wrangler secret put <NAME>` in prod, `.dev.vars` locally, and
-`vitest.config.ts` for tests). Required for full function: `APP_AUTH_SECRET` (session-JWT signing),
-`KEY_ENCRYPTION_SECRET` (base64 32-byte AES-GCM key that encrypts API keys at rest for reveal),
-`APP_URL` (public origin). Optional — unset ⇒ feature disabled gracefully:
-`GOOGLE_OIDC_CLIENT_ID`/`_SECRET`, `MICROSOFT_OIDC_CLIENT_ID`/`_SECRET` (OIDC begin → 503),
-`RESEND_API_KEY`/`RESEND_FROM` (verification email → best-effort no-op; a send failure never wedges
-signup). Email verification gates *publishing*, not signup.
+To exercise the viewer locally, also run the app Worker (from the `app` repo, e.g. on `:8788`) and
+open a benchmark page with `?api=http://localhost:8788`.
 
 ## Testing
 
 ```bash
-npm test                 # vitest (unit + integration, via @cloudflare/vitest-pool-workers)
-npm run test:coverage    # with coverage gates
-npm run typecheck        # tsc for the worker + the node-context config
+npm test          # vitest (the routing Worker, via @cloudflare/vitest-pool-workers)
+npm run typecheck # tsc for the Worker + the node-context config
 ```
-
-Coverage gates: **90%** global with **100%** on the pure modules (`src/query`, `src/logic`,
-`src/serialize`, `src/auth/crypto.ts`).
-
-## Schema management
-
-`migrations/0001_init.sql` is a **one-time clean-slate squash** (there was no production data). The
-moment the first real account exists in production, `0001` is frozen and every subsequent schema
-change becomes a new forward-only migration (`0002_*`, …) — append-only forever. `scripts/seed.sql`
-is generated by `scripts/gen-seed.mjs` (never edit it by hand).
 
 ## Deployment
 
-Builds and tests entirely locally with no Cloudflare account. To deploy to `www.smplmark.org`:
+CI (`.github/workflows/deploy.yml`) deploys this Worker to **www.smplmark.org** + apex on every push
+to `main`, gated on typecheck + tests. It needs one repo secret, `CLOUDFLARE_API_TOKEN` (account id is
+pinned in `wrangler.jsonc`). There is no database step — the app repo owns D1.
 
-1. `npx wrangler login`.
-2. `npx wrangler d1 create smplmark` — copy `database_id` into `wrangler.jsonc`.
-3. `npx wrangler d1 migrations apply smplmark --remote`.
-4. Set secrets: `npx wrangler secret put APP_AUTH_SECRET` (and `KEY_ENCRYPTION_SECRET`, `APP_URL`,
-   and any OIDC / Resend secrets you want enabled). Seed production structural data via the API.
-5. `npx wrangler deploy`.
+> **Cutover note:** this Worker previously also served `app.smplmark.org` (console + auth + API). That
+> surface moved to the `app` repo. The `app.smplmark.org` custom domain was dropped from
+> `wrangler.jsonc` here so the app Worker can claim it — see the `app` repo's README for the ordered
+> cutover.
 
 ## Project layout
 
 ```
-migrations/0001_init.sql   D1 schema (clean-slate squash)
-scripts/gen-seed.mjs       generates scripts/seed.sql (crypto-derived columns)
-public/                    static UI (home, benchmark page, console, Scalar page)
-src/
-  index.ts app.ts          worker entry + Hono app (routes, docs, static fallthrough)
-  types.ts errors.ts config.ts   domain types, JSON:API errors, env/feature config
-  http/                    envelope, error rendering, body parsing, dual-credential middleware
-  auth/                    crypto (PBKDF2/AES/SHA-256), JWT, API keys, OIDC, scope cache
-  authz/                   scope-coverage + authority-ceiling checks
-  query/ logic/ schema/    range/sort/pagination, json-logic + compute-on-read, sample_schema
-  serialize/               row → JSON:API resource, observations → CSV
-  data/                    D1 access (the only layer touching env.DB)
-  services/                account provisioning, session issuance
-  email/ openapi/          Resend transport, generated spec + Scalar page
-  routes/                  auth, users, accounts, account_users, api_keys, benchmarks, targets, runs, observations
+public/
+  index.html               marketing home (lists published benchmarks)
+  about/ terms/ privacy/    marketing pages
+  benchmark.html            the data-driven benchmark shell (served for /benchmarks/{key})
+  benchmarks/index.html     the published-benchmark list
+  js/benchmark.js           benchmark detail: fetches the app API, renders chart + attribution badge
+  js/benchmark-list.js      the card grid on the home + list pages
+  css/app.css               shared styles
+  vendor/uPlot.*            chart library (vendored, no build step)
+scripts/gen-brand.mjs       regenerates the brand PNGs under public/img
+src/index.ts                the routing Worker (apex → www, /benchmarks/{key} shell, static fallthrough)
 ```

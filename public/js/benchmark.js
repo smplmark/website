@@ -79,6 +79,21 @@ function keyFromPath() {
   return decodeURIComponent(parts[1] || "");
 }
 
+// The API lives on the app host (app.smplmark.org) — a different origin from this site — so every
+// request below is cross-origin (the app answers CORS for our origin). Local dev: append
+// ?api=http://localhost:8788 (or set window.SM_API_BASE) to point at a locally-running app Worker.
+function apiBase() {
+  try {
+    const override = new URLSearchParams(location.search).get("api");
+    if (override) return override.replace(/\/+$/, "");
+  } catch (_) {}
+  if (window.SM_API_BASE) return String(window.SM_API_BASE).replace(/\/+$/, "");
+  const h = location.hostname;
+  if (h === "www.smplmark.org" || h === "smplmark.org") return "https://app.smplmark.org";
+  return ""; // same-origin fallback (e.g. a combined local deployment)
+}
+const API = apiBase();
+
 async function errorDetail(res) {
   try {
     const doc = await res.json();
@@ -119,7 +134,7 @@ let chartDrawn = false;
 async function init() {
   const key = keyFromPath();
   try {
-    const doc = await fetchJson("/api/v1/benchmarks?filter[key]=" + encodeURIComponent(key));
+    const doc = await fetchJson(API + "/api/v1/benchmarks?filter[key]=" + encodeURIComponent(key));
     benchmark = doc.data[0];
   } catch (err) {
     el("bm-name").textContent = "Error";
@@ -137,12 +152,12 @@ async function init() {
   document.title = a.name + " — smplmark";
 
   try {
-    publisher = (await fetchJson("/api/v1/accounts/" + encodeURIComponent(a.account))).data;
+    publisher = (await fetchJson(API + "/api/v1/accounts/" + encodeURIComponent(a.account))).data;
   } catch (_) {
     publisher = null;
   }
   try {
-    targets = (await fetchJson("/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id))).data;
+    targets = (await fetchJson(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id))).data;
   } catch (_) {
     targets = [];
   }
@@ -150,7 +165,7 @@ async function init() {
   runs = [];
   for (const t of targets) {
     try {
-      const rs = (await fetchJson("/api/v1/runs?filter[target]=" + encodeURIComponent(t.id))).data;
+      const rs = (await fetchJson(API + "/api/v1/runs?filter[target]=" + encodeURIComponent(t.id))).data;
       for (const r of rs) runs.push({ ...r, targetId: t.id });
     } catch (_) {}
   }
@@ -303,7 +318,7 @@ function currentRange() {
 }
 
 function observationsUrl(targetId, range) {
-  let url = "/api/v1/observations?filter[target]=" + encodeURIComponent(targetId) + "&page[size]=1000";
+  let url = API + "/api/v1/observations?filter[target]=" + encodeURIComponent(targetId) + "&page[size]=1000";
   if (range) url += "&filter[created_at]=" + encodeURIComponent(range);
   return url;
 }

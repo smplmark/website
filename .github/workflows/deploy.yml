@@ -1,9 +1,9 @@
 name: Deploy
 
-# Deploy to production (www.smplmark.org) on every push to main. Gated on typecheck + the full test
-# suite so a broken push never ships. Forward D1 migrations are applied before the Worker deploy so
-# code and schema stay in sync. Requires one repo secret: CLOUDFLARE_API_TOKEN (the account id is
-# pinned in wrangler.jsonc).
+# Deploy the website Worker (www.smplmark.org + apex) on every push to main. Gated on typecheck + the
+# test suite so a broken push never ships. No D1 here — the website is static + a routing shim; the
+# database and API live in the app repo. Requires one repo secret: CLOUDFLARE_API_TOKEN (the account
+# id is pinned in wrangler.jsonc).
 on:
   push:
     branches: [main]
@@ -39,19 +39,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Both commands are idempotent (migrations are tracked in d1_migrations; a deploy re-uploads the
-      # same version), so a bounded retry safely absorbs transient Cloudflare API 5xx blips (e.g. the
-      # D1 query endpoint's intermittent "internal error [code: 7500]") without risking partial state.
-      - name: Apply D1 migrations (forward-only)
-        run: |
-          n=0
-          until [ "$n" -ge 5 ]; do
-            npx wrangler d1 migrations apply smplmark --remote && break
-            n=$((n + 1))
-            echo "::warning::migration apply attempt $n failed (transient Cloudflare API error?); retrying in 20s"
-            sleep 20
-          done
-          [ "$n" -lt 5 ]
+      # A deploy re-uploads the same version idempotently, so a bounded retry safely absorbs transient
+      # Cloudflare API 5xx blips without risking partial state.
       - name: Deploy Worker
         run: |
           n=0
