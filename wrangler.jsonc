@@ -3,6 +3,8 @@
   "name": "smplmark",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
+  // Account id is pinned (non-sensitive) so CI can deploy with only a CLOUDFLARE_API_TOKEN secret.
+  "account_id": "f625d39b265af6ab514726f5f512d85e",
 
   // Serve the Worker on both the apex and www custom domains. Cloudflare provisions the DNS
   // records + TLS certs automatically (requires smplmark.org to be an active zone). The Worker
