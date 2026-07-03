@@ -19,7 +19,7 @@ import {
   requireAuthSecret,
 } from "../config";
 import { getAccountById } from "../data/accounts";
-import { getPrimaryMembershipForUser } from "../data/account_users";
+import { getMembership, getPrimaryMembershipForUser } from "../data/account_users";
 import {
   createIdentity,
   getIdentityByProviderSubject,
@@ -34,8 +34,9 @@ import {
 } from "../data/users";
 import { createVerification, consumeVerification } from "../data/verifications";
 import { sendVerificationEmail } from "../email/resend";
-import { BadRequestError, ServiceUnavailableError, UnauthorizedError } from "../errors";
+import { BadRequestError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from "../errors";
 import { getAuth, requireAuth, type AppBindings } from "../http/middleware";
+import { rateLimit } from "../http/ratelimit";
 import { provisionAccountForUser } from "../services/provision";
 import { startSession } from "../services/session";
 import type { Provider, UserRow } from "../types";
@@ -91,7 +92,7 @@ async function issueVerification(env: Env, db: D1Database, user: UserRow, origin
   });
 }
 
-auth.post("/register", async (c) => {
+auth.post("/register", rateLimit((e) => e.RL_SENSITIVE), async (c) => {
   const body = await readJsonObject(c);
   const email = requireEmail(body);
   const password = requirePassword(body);
@@ -127,12 +128,13 @@ auth.post("/register", async (c) => {
     appUrl(c.env, c.req.url),
     user,
     account,
+    "OWNER",
     Date.now(),
   );
   return jsonResponse({ ...session, verified: false }, 201);
 });
 
-auth.post("/login", async (c) => {
+auth.post("/login", rateLimit((e) => e.RL_AUTH), async (c) => {
   const body = await readJsonObject(c);
   const email = requireEmail(body);
   const password =
@@ -149,7 +151,7 @@ auth.post("/login", async (c) => {
   }
   const membership = await getPrimaryMembershipForUser(c.env.DB, user.id);
   const account = membership ? await getAccountById(c.env.DB, membership.account_id) : null;
-  if (!account) {
+  if (!account || !membership) {
     // A user should always have an account; treat a missing one as a server issue.
     throw new UnauthorizedError(LOGIN_FAILED);
   }
@@ -159,6 +161,7 @@ auth.post("/login", async (c) => {
     appUrl(c.env, c.req.url),
     user,
     account,
+    membership.role,
     Date.now(),
   );
   return jsonResponse({ ...session, verified: user.email_verified === 1 });
@@ -178,7 +181,7 @@ auth.post("/verify-email", async (c) => {
   return jsonResponse({ verified: true });
 });
 
-auth.post("/resend-verification", requireAuth, async (c) => {
+auth.post("/resend-verification", rateLimit((e) => e.RL_SENSITIVE), requireAuth, async (c) => {
   const auth_ = getAuth(c);
   if (!auth_.user_id) {
     throw new BadRequestError("This endpoint requires a session credential.");
@@ -198,6 +201,33 @@ auth.post("/logout", requireAuth, async (c) => {
   return jsonResponse({ ok: true });
 });
 
+/** Switch the active account: re-mint a session for another account the caller is a member of. */
+auth.post("/switch", requireAuth, async (c) => {
+  const auth_ = getAuth(c);
+  if (!auth_.user_id) {
+    throw new BadRequestError("Switching accounts requires a session credential.");
+  }
+  const body = await readJsonObject(c);
+  const accountId = typeof body.account_id === "string" ? body.account_id : "";
+  if (accountId.length === 0) {
+    throw new BadRequestError("account_id is required.", { pointer: "/account_id" });
+  }
+  const membership = await getMembership(c.env.DB, accountId, auth_.user_id);
+  const account = membership ? await getAccountById(c.env.DB, accountId) : null;
+  const user = await getUserById(c.env.DB, auth_.user_id);
+  if (!membership || !account || !user) throw new NotFoundError();
+  const session = await startSession(
+    c.env,
+    c.env.DB,
+    appUrl(c.env, c.req.url),
+    user,
+    account,
+    membership.role,
+    Date.now(),
+  );
+  return jsonResponse({ ...session, verified: user.email_verified === 1 });
+});
+
 // ── OIDC ─────────────────────────────────────────────────────────────────────
 
 function parseProvider(raw: string): Provider {
@@ -210,7 +240,7 @@ function callbackUri(origin: string, provider: Provider): string {
   return `${origin}/api/v1/auth/callback/${provider.toLowerCase()}`;
 }
 
-auth.get("/oidc/:provider", async (c) => {
+auth.get("/oidc/:provider", rateLimit((e) => e.RL_AUTH), async (c) => {
   const provider = parseProvider(c.req.param("provider"));
   const client = oidcClient(c.env, provider);
   if (!client || !oidcConfigured(c.env, provider)) {
@@ -318,9 +348,9 @@ auth.get("/callback/:provider", async (c) => {
 
   const membership = await getPrimaryMembershipForUser(c.env.DB, user.id);
   const account = membership ? await getAccountById(c.env.DB, membership.account_id) : null;
-  if (!account) return fail("Sign-in failed. Please try again.");
+  if (!account || !membership) return fail("Sign-in failed. Please try again.");
 
-  const session = await startSession(c.env, c.env.DB, origin, user, account, Date.now());
+  const session = await startSession(c.env, c.env.DB, origin, user, account, membership.role, Date.now());
   // Frontend reads the token from the URL fragment (never sent to the server / logged).
   return c.redirect(
     `${origin}/auth/callback#token=${encodeURIComponent(session.token)}&expires_in=${session.expires_in}`,

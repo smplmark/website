@@ -5,6 +5,7 @@
 
 (function () {
   const esc = SM.esc;
+  let CAN_ADMIN = false;
   function $(id) { return document.getElementById(id); }
   function setMsg(el, text, kind) {
     if (!el) return;
@@ -12,12 +13,15 @@
     el.className = "form-status" + (text ? " is-" + (kind || "error") : "");
   }
 
-  // Top-bar primary action
-  SM.setTopBarAction(
-    '<button type="button" class="button buttonPrimary buttonTopBar" id="new-key">' +
-    SM.icon("plus", 16) + " Create API key</button>",
-  );
-  $("new-key").addEventListener("click", openCreate);
+  // Top-bar primary action (admins only; wired after identity resolves).
+  function wireTopBar() {
+    if (!CAN_ADMIN) return;
+    SM.setTopBarAction(
+      '<button type="button" class="button buttonPrimary buttonTopBar" id="new-key">' +
+      SM.icon("plus", 16) + " Create API key</button>",
+    );
+    $("new-key").addEventListener("click", openCreate);
+  }
 
   const modal = $("key-modal");
   const formState = $("create-apikey-form");
@@ -77,6 +81,8 @@
 
   // ── Boot ──
   SM.ready.then((id) => {
+    CAN_ADMIN = id.canAdmin;
+    wireTopBar();
     const attrs = (id.user && id.user.attributes) || {};
     if (attrs.verified === false) {
       $("verify-banner").style.display = "flex";
@@ -120,7 +126,7 @@
     const scope = esc(a.scope_type || "") + (a.scope_ref ? ' <span class="muted">' + esc(a.scope_ref) + "</span>" : "");
     const state = a.revoked ? SM.statusPill("revoked", "revoked") : SM.statusPill("active", "active");
     let acts = "";
-    if (!a.revoked) {
+    if (!a.revoked && CAN_ADMIN) {
       acts =
         '<button type="button" class="button buttonSecondary buttonSmall key-rotate" data-id="' + id + '">Rotate</button>' +
         '<button type="button" class="button buttonDanger buttonSmall key-revoke" data-id="' + id + '">Revoke</button>';

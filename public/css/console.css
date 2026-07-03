@@ -205,6 +205,7 @@
 .flyoutItemDanger { color: var(--danger); }
 .flyoutItemDanger:hover { background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .flyoutDivider { margin: 0.25rem 0; border: none; border-top: 1px solid var(--border); }
+.flyoutLabel { display: block; padding: 0.4rem 0.85rem 0.2rem; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
 
 /* ================================================================
    Top bar + breadcrumbs
@@ -368,6 +369,14 @@
 .statusPill.is-private, .statusPill.is-ended, .statusPill.is-expired { background: var(--surface-alt); color: var(--text-muted); }
 .statusPill.is-withdrawn, .statusPill.is-revoked, .statusPill.is-invalidated { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 
+/* Segmented control (tabs) */
+.segmented { display: inline-flex; gap: 0.25rem; padding: 0.25rem; border-radius: 10px; background: var(--surface-alt); border: 1px solid var(--border); }
+.segBtn { padding: 0.4rem 0.85rem; border: none; border-radius: 7px; background: transparent; color: var(--text-muted); font: inherit; font-size: 0.88rem; font-weight: 700; cursor: pointer; }
+.segBtn.isActive { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+
+/* Inline role <select> in a table row */
+.roleSelect { border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-size: 0.83rem; padding: 0.3rem 0.5rem; }
+
 /* ================================================================
    Toolbar
    ================================================================ */
@@ -470,6 +479,8 @@
 .authSocialIcon { width: 20px; height: 20px; flex: 0 0 20px; }
 .authDivider { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.75rem; align-items: center; color: var(--text-muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.06em; }
 .authDivider span:first-child, .authDivider span:last-child { height: 1px; background: var(--border); }
+.authBanner { padding: 12px 16px; font-size: 0.92rem; line-height: 1.5; border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); border-left: 4px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.authBanner.is-stale { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface)); }
 .authFootnote { margin: 0; font-size: 0.9rem; color: var(--text-muted); text-align: center; }
 .authTextLink { color: var(--accent); font-weight: 700; }
 .authTextLink:hover { color: var(--accent-strong); }

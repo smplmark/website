@@ -15,9 +15,26 @@ export const SCOPE_TYPES: readonly ScopeType[] = ["ACCOUNT", "BENCHMARK", "RUN"]
 export type Provider = "GOOGLE" | "MICROSOFT" | "PASSWORD";
 export const PROVIDERS: readonly Provider[] = ["GOOGLE", "MICROSOFT", "PASSWORD"];
 
-/** Account membership role. v1 has only OWNER. */
-export type Role = "OWNER";
-export const ROLES: readonly Role[] = ["OWNER"];
+/**
+ * Account membership role. A strict superset chain (mirrors smplkit): each tier inherits everything
+ * below it. VIEWER (read-only) < MEMBER (create/edit benchmarks) < ADMIN (manage users, keys,
+ * settings) < OWNER (delete account, immutable). Every account has exactly one OWNER — its creator.
+ */
+export type Role = "OWNER" | "ADMIN" | "MEMBER" | "VIEWER";
+export const ROLES: readonly Role[] = ["OWNER", "ADMIN", "MEMBER", "VIEWER"];
+
+/** Roles that can be handed out via invitation. OWNER is never invitable. */
+export type InvitableRole = "ADMIN" | "MEMBER" | "VIEWER";
+export const INVITABLE_ROLES: readonly InvitableRole[] = ["ADMIN", "MEMBER", "VIEWER"];
+
+/** Invitation lifecycle. PENDING → ACCEPTED | REVOKED | EXPIRED (each terminal). */
+export type InvitationStatus = "PENDING" | "ACCEPTED" | "REVOKED" | "EXPIRED";
+export const INVITATION_STATUSES: readonly InvitationStatus[] = [
+  "PENDING",
+  "ACCEPTED",
+  "REVOKED",
+  "EXPIRED",
+];
 
 // ── Identity & tenancy ───────────────────────────────────────────────────────
 
@@ -54,6 +71,20 @@ export interface AccountUserRow {
   account_id: string;
   user_id: string;
   role: Role;
+  created_at: number;
+}
+
+export interface InvitationRow {
+  id: string;
+  account_id: string;
+  email: string;
+  role: InvitableRole;
+  /** SHA-256 of the emailed token (plaintext never stored). Rotated on resend. */
+  token_hash: string;
+  status: InvitationStatus;
+  invited_by_user_id: string | null;
+  expires_at: number;
+  accepted_at: number | null;
   created_at: number;
 }
 

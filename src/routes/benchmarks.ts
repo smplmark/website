@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { covers, isPublicStatus } from "../authz";
+import { covers, isPublicStatus, requireWrite } from "../authz";
 import {
   accountHasVerifiedUser,
 } from "../data/accounts";
@@ -43,6 +43,7 @@ export const benchmarks = new Hono<AppBindings>();
 /** Load a benchmark or 404; enforce that the credential covers it (else 404 — no existence leak). */
 async function loadOwned(c: Context<AppBindings>, id: string): Promise<BenchmarkRow> {
   const auth = getAuth(c);
+  requireWrite(auth); // loadOwned backs only mutating handlers — gate viewers here.
   const row = await getBenchmarkById(c.env.DB, id);
   if (!row || !covers(auth, { account_id: row.account_id, benchmark_id: row.id })) {
     throw new NotFoundError();
@@ -55,6 +56,7 @@ benchmarks.post("/", requireAuth, async (c) => {
   if (auth.scope_type !== "ACCOUNT") {
     throw new ForbiddenError("This credential's scope does not permit creating benchmarks.");
   }
+  requireWrite(auth);
   const attrs = await readAttributes(c);
   const key = requireString(attrs, "key");
   const name = requireString(attrs, "name");

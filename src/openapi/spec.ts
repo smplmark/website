@@ -252,16 +252,89 @@ const account = registerEntity(
   }),
 );
 
+const ROLE_VALUES = ["OWNER", "ADMIN", "MEMBER", "VIEWER"] as const;
+const INVITABLE_ROLE_VALUES = ["ADMIN", "MEMBER", "VIEWER"] as const;
+
 const accountUser = registerEntity(
   "AccountUser",
   "account_user",
   z.object({
     account: idRef("The account this membership belongs to."),
     user: idRef("The member user."),
-    role: z.enum(["OWNER"]).openapi({ description: "The member's role in the account." }),
+    role: z
+      .enum(ROLE_VALUES)
+      .openapi({ description: "The member's role: VIEWER (read-only), MEMBER (edit benchmarks), ADMIN (manage members, keys, settings), or OWNER (the account creator)." }),
+    email: z.string().optional().openapi({ description: "The member's email address (present in the members list)." }),
+    display_name: z.string().nullable().optional().openapi({ description: "The member's display name, or null." }),
+    verified: z.boolean().optional().openapi({ description: "Whether the member's email is confirmed." }),
     created_at: dateTime("When the membership was created."),
   }),
+  z.object({
+    role: z
+      .enum(INVITABLE_ROLE_VALUES)
+      .openapi({ description: "The role to assign the member. The owner's role is immutable and cannot be set here." }),
+  }),
+);
+
+const accountMembership = registerEntity(
+  "AccountMembership",
+  "account_membership",
+  z.object({
+    account: idRef("The account id."),
+    key: z.string().openapi({ description: "The account's URL-safe key." }),
+    name: z.string().openapi({ description: "The account's display name." }),
+    role: z.enum(ROLE_VALUES).openapi({ description: "The caller's role in this account." }),
+    created_at: dateTime("When the caller joined the account."),
+  }),
   z.object({}),
+);
+
+const invitation = registerEntity(
+  "Invitation",
+  "invitation",
+  z.object({
+    account: idRef("The account the invitee is being added to."),
+    email: z.string().openapi({ description: "The invited email address." }),
+    role: z.enum(INVITABLE_ROLE_VALUES).openapi({ description: "The role the invitee receives on acceptance." }),
+    status: z
+      .enum(["PENDING", "ACCEPTED", "REVOKED", "EXPIRED"])
+      .openapi({ description: "The invitation's lifecycle state." }),
+    invited_by_user: z.string().nullable().openapi({ description: "The user who sent the invitation, or null." }),
+    expires_at: dateTime("When the invitation expires."),
+    accepted_at: dateTime("When the invitation was accepted, or null.").nullable(),
+    created_at: dateTime("When the invitation was created."),
+    token: z
+      .string()
+      .optional()
+      .openapi({ description: "The invitation token. Returned only when the invitation is created or resent." }),
+  }),
+  z.object({
+    email: z.string().openapi({ description: "The email address to invite." }),
+    role: z.enum(INVITABLE_ROLE_VALUES).openapi({ description: "The role the invitee will receive." }),
+  }),
+);
+
+const AcceptInvitationRequest = registry.register(
+  "AcceptInvitationRequest",
+  z
+    .object({ token: z.string().openapi({ description: "The invitation token from the emailed link." }) })
+    .openapi({ description: "A request to accept an invitation." }),
+);
+
+const contactEmail = registerEntity(
+  "Email",
+  "email",
+  z.object({
+    topic: z.string().openapi({ description: "The message topic." }),
+    sent_at: dateTime("When the message was sent."),
+  }),
+  z.object({
+    topic: z
+      .enum(["technical", "account", "feature_request", "other"])
+      .optional()
+      .openapi({ description: "The message topic. Defaults to \"other\"." }),
+    body: z.string().openapi({ description: "The message body (max 10,000 characters)." }),
+  }),
 );
 
 const apiKey = registerEntity(
@@ -722,6 +795,175 @@ registry.registerPath({
   },
 });
 
+const memberIdParam = z.object({
+  userId: z.string().openapi({ param: { name: "userId", in: "path" }, description: "The member's user id." }),
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v1/account_users/{userId}",
+  tags: ["Account members"],
+  summary: "Change a member's role",
+  description: "Admin-only. The owner's role is immutable; admins may assign only MEMBER or VIEWER.",
+  security: bearerSecurity,
+  request: { params: memberIdParam, body: domainBody(accountUser.Request, "The new role.") },
+  responses: {
+    "200": domainResponse(accountUser.Response, "The updated membership."),
+    ...commonErrors,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/v1/account_users/{userId}",
+  tags: ["Account members"],
+  summary: "Remove a member",
+  description: "Admin-only. You cannot remove yourself or the account owner.",
+  security: bearerSecurity,
+  request: { params: memberIdParam },
+  responses: {
+    "204": { description: "The member was removed." },
+    ...commonErrors,
+  },
+});
+
+// ── Paths: Account switcher + switch session ─────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/accounts",
+  tags: ["Accounts"],
+  summary: "List the accounts you belong to",
+  description: "Every account the current user is a member of, with their role in each.",
+  security: bearerSecurity,
+  responses: {
+    "200": domainResponse(accountMembership.ListResponse, "The caller's account memberships."),
+    "401": errorJson("Authentication credentials are missing, invalid, expired, or revoked."),
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/auth/switch",
+  tags: ["Auth"],
+  summary: "Switch the active account",
+  description: "Re-issues a session token for another account the caller is a member of.",
+  security: bearerSecurity,
+  request: {
+    body: jsonBody(
+      z
+        .object({ account_id: z.string().openapi({ description: "The account to switch to." }) })
+        .openapi("SwitchAccountRequest", { description: "The account to make active." }),
+      "The account to switch to.",
+    ),
+  },
+  responses: {
+    "200": jsonResponse(AuthTokenResponse, "A session token for the selected account."),
+    ...commonErrors,
+  },
+});
+
+// ── Paths: Invitations ───────────────────────────────────────────────────────
+
+const invitationIdParam = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, description: "The id of the invitation." }),
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/invitations",
+  tags: ["Invitations"],
+  summary: "Invite a member",
+  description: "Admin-only. Emails the invitee a link to accept and join the account at the given role.",
+  security: bearerSecurity,
+  request: { body: domainBody(invitation.Request, "The invitation to send.") },
+  responses: {
+    "201": domainResponse(invitation.Response, "The created invitation (includes the token once)."),
+    ...commonErrors,
+    "409": errorJson("The person is already a member or already has a pending invitation."),
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/invitations",
+  tags: ["Invitations"],
+  summary: "List invitations, or preview one by token",
+  description:
+    "With filter[token] (no auth required) returns the single matching invitation for the sign-in preview. Otherwise lists the current account's invitations (admin-only), optionally filtered by status.",
+  parameters: [
+    filterParam("token", "Look up a single invitation by its token (unauthenticated preview)."),
+    filterParam("status", "Limit to invitations in this status (PENDING, ACCEPTED, REVOKED, EXPIRED)."),
+    ...paginationParams,
+  ],
+  responses: {
+    "200": domainResponse(invitation.ListResponse, "The matching invitations."),
+    "403": errorJson("The credential is not permitted to list invitations."),
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/invitations/{id}/actions/revoke",
+  tags: ["Invitations"],
+  summary: "Revoke a pending invitation",
+  security: bearerSecurity,
+  request: { params: invitationIdParam },
+  responses: {
+    "200": domainResponse(invitation.Response, "The revoked invitation."),
+    ...commonErrors,
+    "409": errorJson("Only a pending invitation can be revoked."),
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/invitations/{id}/actions/resend",
+  tags: ["Invitations"],
+  summary: "Resend a pending invitation",
+  description: "Issues a fresh token, extends the expiry, and re-sends the invitation email.",
+  security: bearerSecurity,
+  request: { params: invitationIdParam },
+  responses: {
+    "200": domainResponse(invitation.Response, "The invitation, with a new token."),
+    ...commonErrors,
+    "409": errorJson("Only a pending invitation can be resent."),
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/invitations/accept",
+  tags: ["Invitations"],
+  summary: "Accept an invitation",
+  description: "The signed-in user (whose email must match the invitation) joins the account.",
+  security: bearerSecurity,
+  request: { body: domainBody(AcceptInvitationRequest, "The invitation token.") },
+  responses: {
+    "200": domainResponse(invitation.Response, "The accepted invitation."),
+    ...commonErrors,
+    "409": errorJson("The invitation has already been used, revoked, or expired."),
+    "410": errorJson("The invitation has expired."),
+  },
+});
+
+// ── Paths: Contact ───────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/emails",
+  tags: ["Contact"],
+  summary: "Send a message to support",
+  description: "Emails the smplmark team and sends the sender an acknowledgement.",
+  security: bearerSecurity,
+  request: { body: domainBody(contactEmail.Request, "The message to send.") },
+  responses: {
+    "201": domainResponse(contactEmail.Response, "The message was sent."),
+    ...commonErrors,
+    "503": errorJson("Messaging is not available in this deployment."),
+  },
+});
+
 // ── Paths: API keys ──────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -1165,6 +1407,8 @@ export function buildOpenApiDocument(serverUrl: string): Record<string, unknown>
       { name: "API keys" },
       { name: "Auth" },
       { name: "Benchmarks" },
+      { name: "Contact" },
+      { name: "Invitations" },
       { name: "Observations" },
       { name: "Runs" },
       { name: "Targets" },

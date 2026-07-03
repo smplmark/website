@@ -5,7 +5,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { JWT_AUDIENCE, JWT_TTL_SECONDS, requireAuthSecret } from "../config";
 import { UnauthorizedError } from "../errors";
-import type { Role } from "./../types";
+import { ROLES, type Role } from "./../types";
 
 export interface SessionClaims {
   /** user id */
@@ -65,14 +65,15 @@ export async function verifySessionToken(env: Env, token: string): Promise<Sessi
     typeof sub !== "string" ||
     typeof account_id !== "string" ||
     typeof jti !== "string" ||
-    role !== "OWNER"
+    typeof role !== "string" ||
+    !(ROLES as readonly string[]).includes(role)
   ) {
     throw new UnauthorizedError();
   }
   return {
     sub,
     account_id,
-    role,
+    role: role as Role,
     email_verified: payload.email_verified === true,
     jti,
   };

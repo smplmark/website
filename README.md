@@ -21,7 +21,14 @@ arrived) is **computed on read** from the timestamp.
 ## Data model
 
 `account (1)→(N) benchmark (1)→(N) target (1)→(N) run (1)→(N) observation`, plus identity
-(`user`, `user_identity`, `account_user`, `session`, `email_verification`) and `api_key`.
+(`user`, `user_identity`, `account_user`, `session`, `email_verification`, `invitation`) and `api_key`.
+
+- **Roles (per `account_user`):** `VIEWER < MEMBER < ADMIN < OWNER` (mirrors smplkit). VIEWER reads;
+  MEMBER edits benchmarks/targets/runs; ADMIN also manages members, invitations, API keys, and
+  account settings; OWNER is the account creator (one per account, immutable). Role gating applies to
+  session credentials — an API key's authority is bounded by its scope. Members are invited by email
+  (`invitation`, 7-day token) via Resend and join on acceptance; a user in more than one account can
+  switch between them.
 
 - **Status lifecycle:** `PRIVATE → PUBLISHED → WITHDRAWN` (each transition one-way). PRIVATE is a
   fully-mutable workspace; PUBLISHED is world-visible and append-only; WITHDRAWN keeps the data
@@ -45,7 +52,14 @@ npm run dev                        # wrangler dev — http://localhost:8787
 ```
 
 Pages: `/` (home), `/benchmarks`, `/benchmarks/scheduler-latency` (data-driven benchmark page),
-`/about`, `/login` · `/signup` · `/account` (self-serve console), `/api-reference` (Scalar).
+`/about`, `/login` · `/signup` · `/account` (dashboard) · `/account/{benchmarks,api-keys,users,
+settings,profile}` (self-serve console), `/accept-invitation`, `/verify-email`, `/api-reference`
+(Scalar).
+
+**Hosting (production):** one Worker, host-partitioned (`src/app.ts`). `app.smplmark.org` serves the
+console + auth + API; `www.smplmark.org` serves the marketing site + published `/benchmarks`; the
+apex 301-redirects to www. Non-production hosts (localhost, previews) serve everything. IP-based rate
+limiting (Cloudflare `ratelimit` bindings) guards login / register / invite / contact.
 
 **Dev credentials** (local only — printed at the top of the generated `scripts/seed.sql`): log in at
 `/login` with `dev@smplkit.test` / `smplmark-dev-password`, or POST a beacon with the seeded

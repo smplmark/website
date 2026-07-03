@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { DerivedContext } from "../../src/logic/derived";
 import {
   serializeAccount,
+  serializeAccountMembership,
   serializeAccountUser,
   serializeApiKey,
   serializeBenchmark,
+  serializeInvitation,
   serializeObservation,
   serializeRun,
   serializeTarget,
@@ -15,6 +17,7 @@ import type {
   AccountUserRow,
   ApiKeyRow,
   BenchmarkRow,
+  InvitationRow,
   ObservationRow,
   RunRow,
   SampleSchema,
@@ -58,6 +61,44 @@ describe("serializeAccountUser", () => {
       id: "a1:u1",
       attributes: { account: "a1", user: "u1", role: "OWNER", created_at: ISO0 },
     });
+  });
+
+  it("surfaces joined identity fields when present", () => {
+    const row = { account_id: "a1", user_id: "u1", role: "MEMBER" as const, created_at: T0, email: "m@b.com", display_name: null, email_verified: 1 };
+    expect(serializeAccountUser(row).attributes).toEqual({
+      account: "a1", user: "u1", role: "MEMBER", created_at: ISO0,
+      email: "m@b.com", display_name: null, verified: true,
+    });
+  });
+});
+
+describe("serializeAccountMembership", () => {
+  it("emits the account + the caller's role", () => {
+    expect(
+      serializeAccountMembership({ account_id: "a1", account_key: "acme", account_name: "Acme", role: "ADMIN", created_at: T0 }),
+    ).toEqual({
+      type: "account_membership",
+      id: "a1",
+      attributes: { account: "a1", key: "acme", name: "Acme", role: "ADMIN", created_at: ISO0 },
+    });
+  });
+});
+
+describe("serializeInvitation", () => {
+  const row: InvitationRow = {
+    id: "inv1", account_id: "a1", email: "x@b.com", role: "MEMBER", token_hash: "HASH",
+    status: "PENDING", invited_by_user_id: "u1", expires_at: T0, accepted_at: null, created_at: T0,
+  };
+  it("omits the token by default and never leaks the hash", () => {
+    const out = serializeInvitation(row);
+    expect(out.attributes).toEqual({
+      account: "a1", email: "x@b.com", role: "MEMBER", status: "PENDING",
+      invited_by_user: "u1", expires_at: ISO0, accepted_at: null, created_at: ISO0,
+    });
+    expect(out.attributes.token).toBeUndefined();
+  });
+  it("includes the plaintext token when supplied", () => {
+    expect(serializeInvitation(row, "PLAINTOKEN").attributes.token).toBe("PLAINTOKEN");
   });
 });
 

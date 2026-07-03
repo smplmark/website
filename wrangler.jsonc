@@ -6,13 +6,26 @@
   // Account id is pinned (non-sensitive) so CI can deploy with only a CLOUDFLARE_API_TOKEN secret.
   "account_id": "f625d39b265af6ab514726f5f512d85e",
 
-  // Serve the Worker on both the apex and www custom domains. Cloudflare provisions the DNS
-  // records + TLS certs automatically (requires smplmark.org to be an active zone). The Worker
-  // 301-redirects the apex to www for a single canonical host.
+  // Serve the Worker on the app, www, and apex custom domains. Cloudflare provisions the DNS records
+  // + TLS certs automatically (requires smplmark.org to be an active zone). The Worker partitions by
+  // host (see src/app.ts): app.smplmark.org = console + auth + API; www.smplmark.org = marketing +
+  // published /benchmarks; the apex 301-redirects to www.
   "routes": [
+    { "pattern": "app.smplmark.org", "custom_domain": true },
     { "pattern": "www.smplmark.org", "custom_domain": true },
     { "pattern": "smplmark.org", "custom_domain": true }
   ],
+
+  // IP-based rate limiting (Cloudflare Workers rate-limiting binding). Keyed on CF-Connecting-IP by
+  // src/http/ratelimit.ts. namespace_id is an arbitrary per-Worker bucket id; period must be 10 or 60.
+  //   RL_AUTH      — login + OIDC begin (10 / 60s)
+  //   RL_SENSITIVE — register, resend-verification, invite, resend-invite, contact (5 / 60s)
+  "unsafe": {
+    "bindings": [
+      { "name": "RL_AUTH", "type": "ratelimit", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
+      { "name": "RL_SENSITIVE", "type": "ratelimit", "namespace_id": "1002", "simple": { "limit": 5, "period": 60 } }
+    ]
+  },
 
   // Static Assets: the ./public dir is served directly for every path EXCEPT /api/*.
   // For /api/* the Worker runs first (Hono handles the JSON:API); the Worker also falls
@@ -40,7 +53,7 @@
   // `.dev.vars` locally (tests supply their own via vitest.config.ts). Required for full function:
   //   APP_AUTH_SECRET        — session-JWT signing (HS256)
   //   KEY_ENCRYPTION_SECRET  — base64 32-byte AES-GCM key encrypting API keys at rest
-  //   APP_URL                — public origin for OIDC redirect + email links
+  //   APP_URL                — public origin of the app (https://app.smplmark.org) for OIDC + email links
   // Optional (unset → feature disabled gracefully): GOOGLE_OIDC_CLIENT_ID/SECRET,
   //   MICROSOFT_OIDC_CLIENT_ID/SECRET (OIDC begin → 503), RESEND_API_KEY, RESEND_FROM (email no-op).
 

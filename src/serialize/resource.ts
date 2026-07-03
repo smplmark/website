@@ -10,7 +10,9 @@ import type {
   AccountUserRow,
   ApiKeyRow,
   BenchmarkRow,
+  InvitationRow,
   ObservationRow,
+  Role,
   RunRow,
   SampleSchema,
   TargetRow,
@@ -54,17 +56,70 @@ export function serializeAccount(row: AccountRow): ResourceObject {
   };
 }
 
-export function serializeAccountUser(row: AccountUserRow): ResourceObject {
+/**
+ * A membership. When the caller passes the joined identity fields (the members-list query), the
+ * member's `email`, `display_name`, and `verified` are surfaced too; the bare form omits them.
+ */
+export function serializeAccountUser(
+  row: AccountUserRow & {
+    email?: string;
+    display_name?: string | null;
+    email_verified?: number;
+  },
+): ResourceObject {
+  const attributes: Record<string, unknown> = {
+    account: row.account_id,
+    user: row.user_id,
+    role: row.role,
+    created_at: iso(row.created_at),
+  };
+  if (row.email !== undefined) {
+    attributes.email = row.email;
+    attributes.display_name = row.display_name ?? null;
+    attributes.verified = row.email_verified === 1;
+  }
   return {
     type: "account_user",
     id: `${row.account_id}:${row.user_id}`,
+    attributes,
+  };
+}
+
+/** One of the caller's accounts, carrying their role in it (the account switcher). */
+export function serializeAccountMembership(row: {
+  account_id: string;
+  account_key: string;
+  account_name: string;
+  role: Role;
+  created_at: number;
+}): ResourceObject {
+  return {
+    type: "account_membership",
+    id: row.account_id,
     attributes: {
       account: row.account_id,
-      user: row.user_id,
+      key: row.account_key,
+      name: row.account_name,
       role: row.role,
       created_at: iso(row.created_at),
     },
   };
+}
+
+/** `token` (the emailed plaintext) is included only on create + resend, never on list. */
+export function serializeInvitation(row: InvitationRow, token?: string): ResourceObject {
+  const attributes: Record<string, unknown> = {
+    account: row.account_id,
+    email: row.email,
+    role: row.role,
+    status: row.status,
+    invited_by_user: row.invited_by_user_id,
+    expires_at: iso(row.expires_at),
+    accepted_at: isoOrNull(row.accepted_at),
+    created_at: iso(row.created_at),
+  };
+  if (token !== undefined) attributes.token = token;
+  return { type: "invitation", id: row.id, attributes };
 }
 
 /** `plaintext` is included (as the `key` attribute) only on create + reveal, never on list. */

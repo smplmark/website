@@ -22,6 +22,7 @@ const TABLES = [
   "api_key",
   "email_verification",
   "session",
+  "invitation",
   "account_user",
   "account",
   "user_identity",

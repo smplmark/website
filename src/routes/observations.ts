@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { covers, isPublicStatus } from "../authz";
+import { covers, isPublicStatus, requireWrite } from "../authz";
 import { getBenchmarkById } from "../data/benchmarks";
 import {
   insertObservation,
@@ -47,6 +47,7 @@ function validateMetrics(value: unknown): Record<string, number> {
 
 observations.post("/", requireAuth, async (c) => {
   const auth = getAuth(c);
+  requireWrite(auth); // API keys (beacons) pass; a viewer session cannot ingest.
   const attrs = await readAttributes(c);
   const runId = requireString(attrs, "run");
 

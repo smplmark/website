@@ -14,6 +14,18 @@ export const API_KEY_PREFIX = "sm_api_";
 /** Email-verification token lifetime. */
 export const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 
+/** Invitation token lifetime (mirrors smplkit). */
+export const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/** Where Contact Us tickets are delivered, and the From/Reply-To for transactional email. */
+export const SUPPORT_EMAIL = "support@smplmark.org";
+
+/** Canonical hosts (production). The app (console + auth + API) lives on `app`; the marketing site
+ *  and published benchmarks live on `www`. See src/app.ts for the host-split routing. */
+export const APP_HOST = "app.smplmark.org";
+export const WWW_HOST = "www.smplmark.org";
+export const APEX_HOST = "smplmark.org";
+
 /**
  * The public origin. Prefers the APP_URL secret; otherwise falls back to the request's own origin
  * (fine for same-origin flows). Trailing slash stripped.

@@ -2,7 +2,7 @@
 import { issueSessionToken } from "../auth/jwt";
 import { JWT_TTL_SECONDS } from "../config";
 import { createSession } from "../data/sessions";
-import type { AccountRow, UserRow } from "../types";
+import type { AccountRow, Role, UserRow } from "../types";
 
 export interface IssuedSession {
   token: string;
@@ -17,6 +17,7 @@ export async function startSession(
   issuer: string,
   user: UserRow,
   account: AccountRow,
+  role: Role,
   now: number,
 ): Promise<IssuedSession> {
   const jti = crypto.randomUUID();
@@ -26,7 +27,7 @@ export async function startSession(
     {
       sub: user.id,
       account_id: account.id,
-      role: "OWNER",
+      role,
       email_verified: user.email_verified === 1,
       jti,
     },

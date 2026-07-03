@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { covers, isPublicStatus } from "../authz";
+import { covers, isPublicStatus, requireWrite } from "../authz";
 import { getBenchmarkById } from "../data/benchmarks";
 import {
   createRun,
@@ -39,6 +39,7 @@ async function loadOwned(
   id: string,
 ): Promise<{ run: RunRow; benchmark: BenchmarkRow }> {
   const auth = getAuth(c);
+  requireWrite(auth); // loadOwned backs only mutating handlers.
   const run = await getRunById(c.env.DB, id);
   if (!run) throw new NotFoundError();
   const target = await getTargetById(c.env.DB, run.target_id);
@@ -65,6 +66,7 @@ function optionalStartedAt(attrs: Record<string, unknown>): number | null {
 
 runs.post("/", requireAuth, async (c) => {
   const auth = getAuth(c);
+  requireWrite(auth);
   const attrs = await readAttributes(c);
   const targetId = requireString(attrs, "target");
   const target = await getTargetById(c.env.DB, targetId);

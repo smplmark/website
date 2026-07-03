@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { canMintScope, type ResourceChain } from "../authz";
+import { canMintScope, requireAdmin, type ResourceChain } from "../authz";
 import { mintApiKey, revealApiKey } from "../auth/apikey";
 import { evictCachedScope } from "../auth/scope_cache";
 import { getBenchmarkById } from "../data/benchmarks";
@@ -71,6 +71,7 @@ async function requestedScopeChain(
 
 apiKeys.post("/", requireAuth, async (c) => {
   const auth = getAuth(c);
+  requireAdmin(auth); // Key management is admin-tier (a viewer/member may use keys, not mint them).
   const attrs = await readAttributes(c);
   const name = requireString(attrs, "name");
   const scopeType = requireEnum(attrs, "scope_type", SCOPE_TYPES);
@@ -126,6 +127,7 @@ apiKeys.get("/:id", requireAuth, async (c) => {
 apiKeys.post("/:id/actions/rotate", requireAuth, async (c) => {
   const auth = getAuth(c);
   requireAccountScope(auth);
+  requireAdmin(auth);
   const old = await getApiKeyById(c.env.DB, c.req.param("id"));
   if (!old || old.account_id !== auth.account_id) throw new NotFoundError();
 
@@ -146,6 +148,7 @@ apiKeys.post("/:id/actions/rotate", requireAuth, async (c) => {
 apiKeys.delete("/:id", requireAuth, async (c) => {
   const auth = getAuth(c);
   requireAccountScope(auth);
+  requireAdmin(auth);
   const row = await getApiKeyById(c.env.DB, c.req.param("id"));
   if (!row || row.account_id !== auth.account_id) throw new NotFoundError();
   await revokeApiKey(c.env.DB, row.id, Date.now());

@@ -5,6 +5,7 @@
 
 (function () {
   let ACCOUNT_ID = null;
+  let CAN_WRITE = true;
   const esc = SM.esc;
 
   function $(id) { return document.getElementById(id); }
@@ -18,12 +19,15 @@
     return String(s).replace(/["\\\]]/g, "\\$&");
   }
 
-  // Top-bar primary action
-  SM.setTopBarAction(
-    '<button type="button" class="button buttonPrimary buttonTopBar" id="new-benchmark">' +
-    SM.icon("plus", 16) + " New benchmark</button>",
-  );
-  $("new-benchmark").addEventListener("click", openCreateModal);
+  // Top-bar primary action (writers only; wired after identity resolves).
+  function wireTopBar() {
+    if (!CAN_WRITE) return;
+    SM.setTopBarAction(
+      '<button type="button" class="button buttonPrimary buttonTopBar" id="new-benchmark">' +
+      SM.icon("plus", 16) + " New benchmark</button>",
+    );
+    $("new-benchmark").addEventListener("click", openCreateModal);
+  }
 
   // ── Create modal ──
   const modal = $("create-modal");
@@ -62,6 +66,8 @@
   // ── Boot ──
   SM.ready.then((id) => {
     ACCOUNT_ID = id.accountId;
+    CAN_WRITE = id.canWrite;
+    wireTopBar();
     loadBenchmarks();
   }).catch(() => {
     $("load-error").innerHTML = '<div class="errorBanner"><p>Failed to load your account.</p></div>';
@@ -91,7 +97,10 @@
     const status = String(a.status || "").toUpperCase();
     const id = esc(b.id);
     let actions = "";
-    if (status === "PRIVATE") {
+    if (!CAN_WRITE) {
+      // Viewers can open published benchmarks but not manage anything.
+      actions = status === "PRIVATE" ? "" : viewLink(a.key);
+    } else if (status === "PRIVATE") {
       actions = btn("Publish", "act-publish", id) + btn("Manage", "act-manage", id) + btn("Delete", "act-delete", id, "danger");
     } else if (status === "PUBLISHED") {
       actions = viewLink(a.key) + btn("Manage", "act-manage", id) + btn("Withdraw", "act-withdraw", id, "danger");

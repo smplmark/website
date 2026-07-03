@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { covers, isPublicStatus } from "../authz";
+import { covers, isPublicStatus, requireWrite } from "../authz";
 import { getBenchmarkById } from "../data/benchmarks";
 import {
   createTarget,
@@ -33,6 +33,7 @@ async function loadOwned(
   id: string,
 ): Promise<{ target: TargetRow; benchmark: BenchmarkRow }> {
   const auth = getAuth(c);
+  requireWrite(auth); // loadOwned backs only mutating handlers.
   const target = await getTargetById(c.env.DB, id);
   if (!target) throw new NotFoundError();
   const benchmark = await getBenchmarkById(c.env.DB, target.benchmark_id);
@@ -51,6 +52,7 @@ async function loadOwned(
 
 targets.post("/", requireAuth, async (c) => {
   const auth = getAuth(c);
+  requireWrite(auth);
   const attrs = await readAttributes(c);
   const benchmarkId = requireString(attrs, "benchmark");
   const benchmark = await getBenchmarkById(c.env.DB, benchmarkId);
