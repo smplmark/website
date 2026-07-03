@@ -80,6 +80,11 @@ export function emailConfigured(env: Env): boolean {
   return !!env.RESEND_API_KEY;
 }
 
+/** True when the Smpl Jobs trigger secret is configured (else the system-job endpoints 503). */
+export function jobsTriggerConfigured(env: Env): boolean {
+  return !!env.JOBS_TRIGGER_SECRET;
+}
+
 /**
  * The JWT signing secret. Absent in a properly-deployed service is a server-config bug, not client
  * input, so callers surface a 500 — never a 400.

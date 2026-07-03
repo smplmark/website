@@ -6,6 +6,9 @@
 (function () {
   let ACCOUNT_ID = null;
   let CAN_WRITE = true;
+  let CAN_ADMIN = false;
+  let USER_ID = null;
+  let ALLOW_PERSONAL = false;
   const esc = SM.esc;
 
   function $(id) { return document.getElementById(id); }
@@ -67,6 +70,9 @@
   SM.ready.then((id) => {
     ACCOUNT_ID = id.accountId;
     CAN_WRITE = id.canWrite;
+    CAN_ADMIN = id.canAdmin;
+    USER_ID = (id.user && id.user.id) || null;
+    ALLOW_PERSONAL = !!(id.account && id.account.attributes && id.account.attributes.allow_personal_publish);
     wireTopBar();
     loadBenchmarks();
   }).catch(() => {

@@ -26,6 +26,54 @@ function safeHttpUrl(u) {
   }
 }
 
+function checkIcon() {
+  return (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>'
+  );
+}
+
+function gravatarUrl(hash, size) {
+  // gravatar_hash is a SHA-256 of the lowercased email (Gravatar accepts SHA-256 or MD5).
+  if (!/^[0-9a-f]{32,64}$/i.test(hash || "")) return null;
+  return "https://www.gravatar.com/avatar/" + hash + "?s=" + size + "&d=mp";
+}
+
+// Build the frozen attribution badge from a benchmark's published_as snapshot. When nameHref is
+// given the name is a link (used in the byline to jump to the Publisher tab).
+function attributionMarkup(pa, nameHref) {
+  if (!pa) return "";
+  const label = esc(pa.name || pa.display_name || "");
+  const nameEl = nameHref
+    ? '<a href="' + esc(nameHref) + '" class="attribution-name" id="byline-link">' + label + "</a>"
+    : '<span class="attribution-name">' + label + "</span>";
+  if (pa.kind === "ORGANIZATION") {
+    const logo = safeHttpUrl(pa.logo_url);
+    const logoImg = logo ? '<img class="attribution-logo" src="' + esc(logo) + '" alt="" />' : "";
+    const domains = Array.isArray(pa.verified_domains) ? pa.verified_domains : [];
+    let verified = "";
+    if (domains.length) {
+      const extra = domains.length > 1 ? " +" + (domains.length - 1) : "";
+      verified =
+        '<span class="attribution-verified" title="Verified domain: ' + esc(domains.join(", ")) + '">' +
+        checkIcon() + esc(domains[0]) + extra + "</span>";
+    }
+    return '<span class="attribution"><span class="who">' + logoImg + nameEl + "</span>" + verified + "</span>";
+  }
+  // PERSONAL
+  const g = gravatarUrl(pa.gravatar_hash, 44);
+  const avatar = g ? '<img class="attribution-avatar" src="' + esc(g) + '" alt="" />' : "";
+  return '<span class="attribution"><span class="who">' + avatar + nameEl + "</span></span>";
+}
+
+// Drop a badge image that fails to load (missing logo / gravatar 404) rather than showing a broken icon.
+function wireBadgeImages(container) {
+  if (!container) return;
+  container.querySelectorAll(".attribution-logo, .attribution-avatar").forEach((img) => {
+    img.addEventListener("error", () => img.remove());
+  });
+}
+
 function keyFromPath() {
   const parts = location.pathname.split("/").filter(Boolean);
   return decodeURIComponent(parts[1] || "");
@@ -138,11 +186,15 @@ function renderHead() {
     esc(a.name) +
     (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "");
   el("bm-tagline").textContent = a.description || "";
-  if (publisher) {
-    el("bm-byline").innerHTML =
-      'Published by <a href="#publisher" id="byline-link">' + esc(publisher.attributes.name) + "</a>";
+  // Byline comes from the frozen published_as snapshot, never a live account lookup.
+  const pa = a.published_as;
+  if (pa) {
+    el("bm-byline").innerHTML = "Published by " + attributionMarkup(pa, "#publisher");
     const link = el("byline-link");
     if (link) link.addEventListener("click", (e) => { e.preventDefault(); activateTab("publisher"); });
+    wireBadgeImages(el("bm-byline"));
+  } else {
+    el("bm-byline").textContent = "";
   }
 }
 
@@ -194,20 +246,34 @@ function renderMethodology() {
 
 function renderPublisher() {
   const box = el("publisher-body");
-  if (!publisher) {
+  const pa = benchmark.attributes.published_as;
+  let html = "";
+  // Lead with the frozen attribution so the tab is self-consistent even if the live account lookup
+  // failed. The account fetch below only adds optional extra detail.
+  if (pa) {
+    const kindLabel = pa.kind === "ORGANIZATION" ? "Organization" : "Individual";
+    html += '<div class="publisher-badge">' + attributionMarkup(pa) + '<span class="publisher-kind">' + kindLabel + "</span></div>";
+    if (pa.kind === "ORGANIZATION" && Array.isArray(pa.verified_domains) && pa.verified_domains.length) {
+      html += '<p class="since">Verified domain' + (pa.verified_domains.length > 1 ? "s" : "") + ": " + pa.verified_domains.map(esc).join(", ") + "</p>";
+    }
+  }
+  if (publisher) {
+    const p = publisher.attributes;
+    const since = p.created_at
+      ? new Date(p.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long" })
+      : null;
+    const link = safeHttpUrl(p.url);
+    html +=
+      (since ? `<p class="since">Publishing on smplmark since ${esc(since)}</p>` : "") +
+      (p.description ? `<p>${esc(p.description)}</p>` : "") +
+      (link ? `<a class="site" href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a>` : "");
+  }
+  if (!html) {
     box.innerHTML = '<p class="muted">Publisher information is unavailable.</p>';
     return;
   }
-  const p = publisher.attributes;
-  const since = p.created_at
-    ? new Date(p.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long" })
-    : null;
-  const link = safeHttpUrl(p.url);
-  box.innerHTML =
-    `<h3>${esc(p.name)}</h3>` +
-    (since ? `<p class="since">Publishing on smplmark since ${esc(since)}</p>` : "") +
-    (p.description ? `<p>${esc(p.description)}</p>` : "") +
-    (link ? `<a class="site" href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a>` : "");
+  box.innerHTML = html;
+  wireBadgeImages(box);
 }
 
 // ── Tabs ──
