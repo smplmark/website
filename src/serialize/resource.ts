@@ -12,6 +12,10 @@ import type {
   BenchmarkRow,
   InvitationRow,
   ObservationRow,
+  OrgAttributionSnapshot,
+  PersonalAttributionSnapshot,
+  PublisherDomainRow,
+  PublisherIdentityRow,
   Role,
   RunRow,
   SampleSchema,
@@ -51,6 +55,7 @@ export function serializeAccount(row: AccountRow): ResourceObject {
       name: row.name,
       description: row.description,
       url: row.url,
+      allow_personal_publish: row.allow_personal_publish === 1,
       created_at: iso(row.created_at),
     },
   };
@@ -143,24 +148,85 @@ export function serializeApiKey(
   return { type: "api_key", id: row.id, attributes };
 }
 
-export function serializeBenchmark(row: BenchmarkRow): ResourceObject {
+/**
+ * The publish-attribution badge, sourced entirely from the frozen `attribution_snapshot` (never a live
+ * lookup) so it survives a later domain lapse or identity deletion. `null` for an unpublished benchmark.
+ */
+function buildPublishedAs(row: BenchmarkRow): Record<string, unknown> | null {
+  if (row.published_as_kind === null || row.attribution_snapshot === null) return null;
+  if (row.published_as_kind === "ORGANIZATION") {
+    const snap = JSON.parse(row.attribution_snapshot) as OrgAttributionSnapshot;
+    return {
+      kind: "ORGANIZATION",
+      identity: row.published_identity_id,
+      name: snap.name,
+      logo_url: snap.logo_url,
+      verified_domains: snap.verified_domains,
+    };
+  }
+  const snap = JSON.parse(row.attribution_snapshot) as PersonalAttributionSnapshot;
   return {
-    type: "benchmark",
+    kind: "PERSONAL",
+    display_name: snap.display_name,
+    gravatar_hash: snap.email_sha256,
+  };
+}
+
+export function serializeBenchmark(row: BenchmarkRow): ResourceObject {
+  const attributes: Record<string, unknown> = {
+    account: row.account_id,
+    key: row.key,
+    name: row.name,
+    description: row.description,
+    about: row.about,
+    methodology: row.methodology,
+    status: row.status,
+    draft: row.draft === 1,
+    created_by: row.created_by_user_id,
+    published_at: isoOrNull(row.published_at),
+    withdrawn_at: isoOrNull(row.withdrawn_at),
+    withdrawal_reason: row.withdrawal_reason,
+    sample_schema: parseSampleSchema(row.sample_schema),
+    created_at: iso(row.created_at),
+    updated_at: iso(row.updated_at),
+  };
+  const publishedAs = buildPublishedAs(row);
+  if (publishedAs !== null) {
+    attributes.published_by = row.published_by_user_id;
+    attributes.published_as = publishedAs;
+  }
+  return { type: "benchmark", id: row.id, attributes };
+}
+
+export function serializePublisherIdentity(row: PublisherIdentityRow): ResourceObject {
+  return {
+    type: "publisher_identity",
     id: row.id,
     attributes: {
       account: row.account_id,
       key: row.key,
       name: row.name,
-      description: row.description,
-      about: row.about,
-      methodology: row.methodology,
-      status: row.status,
-      published_at: isoOrNull(row.published_at),
-      withdrawn_at: isoOrNull(row.withdrawn_at),
-      withdrawal_reason: row.withdrawal_reason,
-      sample_schema: parseSampleSchema(row.sample_schema),
+      logo_url: row.logo_url,
       created_at: iso(row.created_at),
       updated_at: iso(row.updated_at),
+    },
+  };
+}
+
+export function serializePublisherDomain(row: PublisherDomainRow): ResourceObject {
+  return {
+    type: "publisher_domain",
+    id: row.id,
+    attributes: {
+      account: row.account_id,
+      publisher_identity: row.publisher_identity_id,
+      domain: row.domain,
+      status: row.status,
+      verification_token: row.verification_token,
+      verified: row.status === "VERIFIED",
+      verified_at: isoOrNull(row.verified_at),
+      last_checked_at: isoOrNull(row.last_checked_at),
+      created_at: iso(row.created_at),
     },
   };
 }

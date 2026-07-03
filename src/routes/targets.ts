@@ -21,7 +21,7 @@ import {
 import { paginationMeta } from "../query/pagination";
 import { serializeTarget } from "../serialize/resource";
 import type { BenchmarkRow, TargetRow } from "../types";
-import { readAttributes, readPagination, readSort } from "./shared";
+import { assertBenchmarkEditable, readAttributes, readPagination, readSort } from "./shared";
 
 const SORT_ALLOWED = ["name", "key", "created_at", "updated_at"] as const;
 
@@ -62,6 +62,7 @@ targets.post("/", requireAuth, async (c) => {
   ) {
     throw new NotFoundError();
   }
+  assertBenchmarkEditable(benchmark);
   const key = requireString(attrs, "key");
   const name = requireString(attrs, "name");
   const details = "details" in attrs ? attrs.details : null;
@@ -124,7 +125,8 @@ targets.get("/:id", optionalAuth, async (c) => {
 });
 
 targets.put("/:id", requireAuth, async (c) => {
-  const { target } = await loadOwned(c, c.req.param("id"));
+  const { target, benchmark } = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(benchmark);
   const attrs = await readAttributes(c);
   const name = requireString(attrs, "name");
   const details = "details" in attrs ? attrs.details : null;
@@ -134,6 +136,7 @@ targets.put("/:id", requireAuth, async (c) => {
 
 targets.delete("/:id", requireAuth, async (c) => {
   const { target, benchmark } = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(benchmark);
   if (benchmark.status !== "PRIVATE") {
     throw new ConflictError(
       "Published benchmark data is append-only; a target cannot be deleted.",

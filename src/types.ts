@@ -36,6 +36,18 @@ export const INVITATION_STATUSES: readonly InvitationStatus[] = [
   "EXPIRED",
 ];
 
+/** A publisher domain's verification lifecycle. PENDING → VERIFIED ↔ LAPSED. */
+export type PublisherDomainStatus = "PENDING" | "VERIFIED" | "LAPSED";
+export const PUBLISHER_DOMAIN_STATUSES: readonly PublisherDomainStatus[] = [
+  "PENDING",
+  "VERIFIED",
+  "LAPSED",
+];
+
+/** How a published benchmark is attributed: to its author (personal) or an org brand. */
+export type PublishedKind = "PERSONAL" | "ORGANIZATION";
+export const PUBLISHED_KINDS: readonly PublishedKind[] = ["PERSONAL", "ORGANIZATION"];
+
 // ── Identity & tenancy ───────────────────────────────────────────────────────
 
 export interface UserRow {
@@ -64,6 +76,8 @@ export interface AccountRow {
   name: string;
   description: string | null;
   url: string | null;
+  /** 0/1 boolean. Gates the direct personal self-publish shortcut. Surfaced as `allow_personal_publish`. */
+  allow_personal_publish: number;
   created_at: number;
 }
 
@@ -140,8 +154,58 @@ export interface BenchmarkRow {
   withdrawal_reason: string | null;
   /** JSON string of a SampleSchema. */
   sample_schema: string;
+  /** The user who created the benchmark, or null if an API key created it. */
+  created_by_user_id: string | null;
+  /** 0/1 boolean. 1 = still cooking (editable); 0 = marked ready (subtree locked). Surfaced as `draft`. */
+  draft: number;
+  /** The user who performed the publish (the admin, for an org publish); null until published. */
+  published_by_user_id: string | null;
+  /** How the published benchmark is attributed; null until published. */
+  published_as_kind: PublishedKind | null;
+  /** Soft pointer to the org identity for an ORGANIZATION publish; null otherwise (no FK — see 0003). */
+  published_identity_id: string | null;
+  /** JSON AttributionSnapshot, frozen at publish; null until published. */
+  attribution_snapshot: string | null;
   created_at: number;
   updated_at: number;
+}
+
+/** The frozen-at-publish attribution for an ORGANIZATION publish. */
+export interface OrgAttributionSnapshot {
+  name: string;
+  logo_url: string | null;
+  /** Domains that were VERIFIED at the instant of publish. */
+  verified_domains: string[];
+}
+
+/** The frozen-at-publish attribution for a PERSONAL publish. */
+export interface PersonalAttributionSnapshot {
+  display_name: string | null;
+  /** SHA-256 of the author's normalized email at publish (for a stable gravatar). */
+  email_sha256: string;
+}
+
+export interface PublisherIdentityRow {
+  id: string;
+  account_id: string;
+  key: string;
+  name: string;
+  logo_url: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface PublisherDomainRow {
+  id: string;
+  account_id: string;
+  publisher_identity_id: string;
+  domain: string;
+  /** The TXT record value the user adds to DNS. Public (goes in DNS) — stored plaintext, surfaced. */
+  verification_token: string;
+  status: PublisherDomainStatus;
+  verified_at: number | null;
+  last_checked_at: number | null;
+  created_at: number;
 }
 
 export interface TargetRow {

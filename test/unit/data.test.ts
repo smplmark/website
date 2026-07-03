@@ -14,7 +14,7 @@ import { consumeVerification, createVerification } from "../../src/data/verifica
 import type { AccountRow, BenchmarkRow, RunRow, SampleSchema, TargetRow } from "../../src/types";
 
 // D1 (miniflare) enforces foreign keys, so every child needs a real parent row.
-const TABLES = ["observation", "run", "target", "benchmark", "api_key", "email_verification", "account_user", "account", "user"];
+const TABLES = ["observation", "run", "target", "benchmark", "publisher_domain", "publisher_identity", "api_key", "email_verification", "account_user", "account", "user"];
 beforeEach(async () => {
   for (const t of TABLES) await env.DB.prepare(`DELETE FROM ${t}`).run();
 });
@@ -25,7 +25,7 @@ const sort = { field: "created_at", desc: false };
 async function chain(): Promise<{ account: AccountRow; benchmark: BenchmarkRow; target: TargetRow; run: RunRow }> {
   const account = await createAccount(env.DB, { key: `host-${crypto.randomUUID()}`, name: "Host" });
   const benchmark = await createBenchmark(env.DB, {
-    account_id: account.id, key: "b", name: "B", description: null, about: null, methodology: null, sample_schema: schema,
+    account_id: account.id, key: "b", name: "B", description: null, about: null, methodology: null, sample_schema: schema, created_by_user_id: null,
   });
   const target = await createTarget(env.DB, { benchmark_id: benchmark.id, key: "t", name: "T", details: null });
   const run = await createRun(env.DB, { target_id: target.id, key: "r", name: null, details: null, started_at: null });
@@ -47,7 +47,7 @@ describe("unique-violation → 409 on create", () => {
     const { account, benchmark, target } = await chain();
     await expectConflict(() => createAccount(env.DB, { key: account.key, name: "B" }));
     await expectConflict(() =>
-      createBenchmark(env.DB, { account_id: account.id, key: "b", name: "B2", description: null, about: null, methodology: null, sample_schema: schema }),
+      createBenchmark(env.DB, { account_id: account.id, key: "b", name: "B2", description: null, about: null, methodology: null, sample_schema: schema, created_by_user_id: null }),
     );
     await expectConflict(() => createTarget(env.DB, { benchmark_id: benchmark.id, key: "t", name: "T2", details: null }));
     await expectConflict(() => createRun(env.DB, { target_id: target.id, key: "r", name: null, details: null, started_at: null }));
@@ -57,7 +57,7 @@ describe("unique-violation → 409 on create", () => {
 describe("non-unique DB errors are rethrown (not swallowed as 409)", () => {
   it("rethrows a foreign-key violation on create", async () => {
     await expect(
-      createBenchmark(env.DB, { account_id: "ghost-account", key: "x", name: "X", description: null, about: null, methodology: null, sample_schema: schema }),
+      createBenchmark(env.DB, { account_id: "ghost-account", key: "x", name: "X", description: null, about: null, methodology: null, sample_schema: schema, created_by_user_id: null }),
     ).rejects.toThrow(/FOREIGN KEY/);
     await expect(
       createTarget(env.DB, { benchmark_id: "ghost-benchmark", key: "x", name: "X", details: null }),
@@ -96,7 +96,7 @@ describe("listObservations with a date range", () => {
 
 describe("update / lookup not-found paths return null", () => {
   it("updates of missing rows and missing membership return null", async () => {
-    expect(await updateAccount(env.DB, "nope", { name: "x", description: null, url: null })).toBeNull();
+    expect(await updateAccount(env.DB, "nope", { name: "x", description: null, url: null, allow_personal_publish: 0 })).toBeNull();
     expect(await updateBenchmark(env.DB, "nope", { name: "x", description: null, about: null, methodology: null, sample_schema: schema })).toBeNull();
     expect(await updateTarget(env.DB, "nope", { name: "x", details: null })).toBeNull();
     expect(await updateRun(env.DB, "nope", { name: "x", details: null, started_at: null })).toBeNull();

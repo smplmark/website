@@ -28,7 +28,7 @@ import {
 import { paginationMeta } from "../query/pagination";
 import { serializeRun } from "../serialize/resource";
 import type { BenchmarkRow, RunRow } from "../types";
-import { readAttributes, readPagination, readSort } from "./shared";
+import { assertBenchmarkEditable, readAttributes, readPagination, readSort } from "./shared";
 
 const SORT_ALLOWED = ["key", "started_at", "created_at", "updated_at"] as const;
 
@@ -82,6 +82,7 @@ runs.post("/", requireAuth, async (c) => {
   ) {
     throw new NotFoundError();
   }
+  assertBenchmarkEditable(benchmark);
   const key = requireString(attrs, "key");
   const name = optionalStringOrNull(attrs, "name") ?? null;
   const details = "details" in attrs ? attrs.details : null;
@@ -157,6 +158,7 @@ runs.get("/:id", optionalAuth, async (c) => {
 
 runs.put("/:id", requireAuth, async (c) => {
   const { run, benchmark } = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(benchmark);
   const attrs = await readAttributes(c);
   const name = optionalStringOrNull(attrs, "name") ?? null;
   const details = "details" in attrs ? attrs.details : null;
@@ -173,6 +175,7 @@ runs.put("/:id", requireAuth, async (c) => {
 
 runs.delete("/:id", requireAuth, async (c) => {
   const { run, benchmark } = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(benchmark);
   if (benchmark.status !== "PRIVATE") {
     throw new ConflictError(
       "Published benchmark data is append-only; a run cannot be deleted. Invalidate it instead.",
@@ -183,7 +186,8 @@ runs.delete("/:id", requireAuth, async (c) => {
 });
 
 runs.post("/:id/actions/end", requireAuth, async (c) => {
-  const { run } = await loadOwned(c, c.req.param("id"));
+  const { run, benchmark } = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(benchmark);
   if (run.ended_at !== null) {
     throw new ConflictError("This run has already ended.");
   }
@@ -193,7 +197,8 @@ runs.post("/:id/actions/end", requireAuth, async (c) => {
 
 runs.post("/:id/actions/invalidate", requireAuth, async (c) => {
   const auth = getAuth(c);
-  const { run } = await loadOwned(c, c.req.param("id"));
+  const { run, benchmark } = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(benchmark);
   const attrs = await readAttributes(c).catch(() => ({}) as Record<string, unknown>);
   const reason = optionalStringOrNull(attrs, "invalidation_reason") ?? null;
   const row = await invalidateRun(c.env.DB, run.id, Date.now(), reason, auth.user_id);

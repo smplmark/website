@@ -13,6 +13,8 @@ import { benchmarks } from "./routes/benchmarks";
 import { emails } from "./routes/emails";
 import { invitations } from "./routes/invitations";
 import { observations } from "./routes/observations";
+import { publisherDomains } from "./routes/publisher_domains";
+import { publisherIdentities } from "./routes/publisher_identities";
 import { runs } from "./routes/runs";
 import { targets } from "./routes/targets";
 import { users } from "./routes/users";
@@ -95,6 +97,8 @@ export function createApp() {
   app.route("/api/v1/targets", targets);
   app.route("/api/v1/runs", runs);
   app.route("/api/v1/observations", observations);
+  app.route("/api/v1/publisher_identities", publisherIdentities);
+  app.route("/api/v1/publisher_domains", publisherDomains);
 
   // ── Docs (ADR-008): un-versioned generated spec + Scalar reference page ──
   app.get("/api/openapi.json", (c) =>

@@ -58,6 +58,17 @@ export function optionalStringOrNull(
   throw new BadRequestError(`${field} must be a string or null.`, pointer(field));
 }
 
+/** Present → boolean; absent → undefined; wrong type → 400. */
+export function optionalBoolean(
+  attrs: Record<string, unknown>,
+  field: string,
+): boolean | undefined {
+  if (!(field in attrs)) return undefined;
+  const v = attrs[field];
+  if (typeof v === "boolean") return v;
+  throw new BadRequestError(`${field} must be a boolean.`, pointer(field));
+}
+
 /**
  * Enum parsing (ADR-014): SCREAMING_SNAKE_CASE on the wire, case-insensitive on input. The input is
  * upper-cased before matching, so `"private"`/`"Private"`/`"PRIVATE"` all resolve to `"PRIVATE"`.

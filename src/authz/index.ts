@@ -62,10 +62,53 @@ export function isOwner(ctx: AuthContext): boolean {
   return ctx.role === "OWNER";
 }
 
+// ── Publish attribution (§4/§5) ──────────────────────────────────────────────
+// Publish and withdraw are SESSION-only: attribution is inherently user-driven, so the
+// "API keys pass all role gates" shortcut deliberately does NOT apply to these two actions.
+
+/** The user who created the benchmark, acting via a session. */
+export function isAuthor(
+  ctx: AuthContext,
+  benchmark: { created_by_user_id: string | null },
+): boolean {
+  return (
+    ctx.source === "SESSION" &&
+    ctx.user_id !== null &&
+    benchmark.created_by_user_id !== null &&
+    benchmark.created_by_user_id === ctx.user_id
+  );
+}
+
+/** Publishing under an organization identity: a signed-in admin. */
+export function canPublishOrg(ctx: AuthContext): boolean {
+  return ctx.source === "SESSION" && canAdmin(ctx);
+}
+
+/** The direct personal self-publish shortcut: the signed-in author, when the account allows it. */
+export function canPublishPersonal(
+  ctx: AuthContext,
+  benchmark: { created_by_user_id: string | null },
+  account: { allow_personal_publish: number } | null,
+): boolean {
+  return (
+    ctx.source === "SESSION" &&
+    isAuthor(ctx, benchmark) &&
+    account !== null &&
+    account.allow_personal_publish === 1 &&
+    canWrite(ctx)
+  );
+}
+
 export const RBAC_REASONS = {
   write: "Viewers can view resources but can't edit them. Ask an admin to change your role.",
   admin: "Only admins can manage members, invitations, API keys, and account settings.",
   owner: "Only the account owner can perform this action.",
+  publishSession: "Publishing a benchmark requires signing in; API keys can't publish.",
+  withdrawSession: "Withdrawing a benchmark requires signing in; API keys can't withdraw.",
+  publishOrg: "Only an admin can publish under an organization identity.",
+  publishPersonal:
+    "Personal publishing is disabled for this account; submit it for an admin to publish.",
+  withdrawPersonal: "Only the author or an admin can withdraw this benchmark.",
 } as const;
 
 /** Throw 403 unless the caller may write resources. */

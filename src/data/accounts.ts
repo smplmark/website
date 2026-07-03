@@ -19,14 +19,23 @@ export async function createAccount(
     name: input.name,
     description: input.description ?? null,
     url: input.url ?? null,
+    allow_personal_publish: 0,
     created_at: Date.now(),
   };
   try {
     await db
       .prepare(
-        "INSERT INTO account (id, key, name, description, url, created_at) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO account (id, key, name, description, url, allow_personal_publish, created_at) VALUES (?,?,?,?,?,?,?)",
       )
-      .bind(row.id, row.key, row.name, row.description, row.url, row.created_at)
+      .bind(
+        row.id,
+        row.key,
+        row.name,
+        row.description,
+        row.url,
+        row.allow_personal_publish,
+        row.created_at,
+      )
       .run();
   } catch (e) {
     if (isUniqueViolation(e)) {
@@ -78,6 +87,8 @@ export interface UpdateAccountInput {
   name: string;
   description: string | null;
   url: string | null;
+  /** 0/1. The personal-publish opt-in (admins only, via account settings). */
+  allow_personal_publish: number;
 }
 
 export async function updateAccount(
@@ -92,10 +103,19 @@ export async function updateAccount(
     name: input.name,
     description: input.description,
     url: input.url,
+    allow_personal_publish: input.allow_personal_publish,
   };
   await db
-    .prepare("UPDATE account SET name=?, description=?, url=? WHERE id=?")
-    .bind(updated.name, updated.description, updated.url, id)
+    .prepare(
+      "UPDATE account SET name=?, description=?, url=?, allow_personal_publish=? WHERE id=?",
+    )
+    .bind(
+      updated.name,
+      updated.description,
+      updated.url,
+      updated.allow_personal_publish,
+      id,
+    )
     .run();
   return updated;
 }

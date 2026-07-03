@@ -25,7 +25,7 @@ import { parseSampleSchema } from "../schema/sample_schema";
 import { observationsToCsv } from "../serialize/csv";
 import { serializeObservation } from "../serialize/resource";
 import type { AuthContext, SampleSchema } from "../types";
-import { readAttributes, readPagination, readSort } from "./shared";
+import { assertBenchmarkEditable, readAttributes, readPagination, readSort } from "./shared";
 
 const SORT_ALLOWED = ["created_at"] as const;
 
@@ -67,6 +67,7 @@ observations.post("/", requireAuth, async (c) => {
   ) {
     throw new NotFoundError();
   }
+  assertBenchmarkEditable(benchmark);
 
   const now = Date.now();
   const createdAt = "created_at" in attrs ? parseEpochMs(attrs.created_at, "created_at") : now;

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   JSONAPI,
   apiDelete,
@@ -239,6 +239,51 @@ describe("member management", () => {
   });
 });
 
+describe("account settings — personal-publish opt-in", () => {
+  it("defaults off, can be turned on, is left unchanged when omitted, and can be turned off", async () => {
+    const owner = await register("settings@example.com");
+
+    const current = await apiGet("/api/v1/accounts/current", bearer(owner.token));
+    expect(((await current.json()) as { data: Resource }).data.attributes.allow_personal_publish).toBe(false);
+
+    // turn it on
+    const on = await apiPut(
+      "/api/v1/accounts/current",
+      { data: { type: "account", attributes: { name: "Acct", allow_personal_publish: true } } },
+      bearer(owner.token),
+    );
+    expect(((await on.json()) as { data: Resource }).data.attributes.allow_personal_publish).toBe(true);
+
+    // a settings PUT that omits the flag leaves it unchanged
+    const omitted = await apiPut(
+      "/api/v1/accounts/current",
+      { data: { type: "account", attributes: { name: "Acct Renamed" } } },
+      bearer(owner.token),
+    );
+    const body = ((await omitted.json()) as { data: Resource }).data.attributes;
+    expect(body.name).toBe("Acct Renamed");
+    expect(body.allow_personal_publish).toBe(true);
+
+    // turn it off
+    const off = await apiPut(
+      "/api/v1/accounts/current",
+      { data: { type: "account", attributes: { name: "Acct Renamed", allow_personal_publish: false } } },
+      bearer(owner.token),
+    );
+    expect(((await off.json()) as { data: Resource }).data.attributes.allow_personal_publish).toBe(false);
+  });
+
+  it("400s a non-boolean allow_personal_publish", async () => {
+    const owner = await register("badflag@example.com");
+    const res = await apiPut(
+      "/api/v1/accounts/current",
+      { data: { type: "account", attributes: { name: "Acct", allow_personal_publish: "yes" } } },
+      bearer(owner.token),
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("account switcher", () => {
   it("lists memberships and switches the active account", async () => {
     const owner = await register("switch-owner@example.com");
@@ -447,5 +492,38 @@ describe("contact us", () => {
       { "Content-Type": JSONAPI },
     );
     expect(unauth.status).toBe(401);
+  });
+
+  it("sends the support ticket + auto-response when email is configured", async () => {
+    const user = await register("contact-ok@example.com");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "re_1" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    env.RESEND_API_KEY = "re_test";
+    try {
+      const res = await apiPost(
+        "/api/v1/emails",
+        { data: { type: "email", attributes: { topic: "technical", body: "please help" } } },
+        bearer(user.token),
+      );
+      expect(res.status).toBe(201);
+      const doc = (await res.json()) as { data: Resource };
+      expect(doc.data.attributes.topic).toBe("technical");
+      expect(typeof doc.data.attributes.sent_at).toBe("string");
+      expect(fetchMock).toHaveBeenCalledTimes(2); // support ticket + sender auto-response
+    } finally {
+      env.RESEND_API_KEY = undefined;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects contact from an API key (no user) with 403", async () => {
+    const owner = await register("contact-key@example.com");
+    const { key } = await mintKey(owner.token, { scope_type: "ACCOUNT" });
+    const res = await apiPost(
+      "/api/v1/emails",
+      { data: { type: "email", attributes: { body: "hi from a key" } } },
+      bearer(key),
+    );
+    expect(res.status).toBe(403);
   });
 });

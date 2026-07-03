@@ -1,6 +1,6 @@
 import { ConflictError } from "../errors";
 import { orderByClause, type Sort } from "../query/sort";
-import type { BenchmarkRow, SampleSchema, Status } from "../types";
+import type { BenchmarkRow, PublishedKind, SampleSchema, Status } from "../types";
 import { isUniqueViolation } from "./d1";
 
 export interface CreateBenchmarkInput {
@@ -11,6 +11,8 @@ export interface CreateBenchmarkInput {
   about: string | null;
   methodology: string | null;
   sample_schema: SampleSchema;
+  /** The creating user, or null if an API key created it. */
+  created_by_user_id: string | null;
 }
 
 export async function createBenchmark(
@@ -31,13 +33,19 @@ export async function createBenchmark(
     withdrawn_at: null,
     withdrawal_reason: null,
     sample_schema: JSON.stringify(input.sample_schema),
+    created_by_user_id: input.created_by_user_id,
+    draft: 1,
+    published_by_user_id: null,
+    published_as_kind: null,
+    published_identity_id: null,
+    attribution_snapshot: null,
     created_at: now,
     updated_at: now,
   };
   try {
     await db
       .prepare(
-        "INSERT INTO benchmark (id, account_id, key, name, description, about, methodology, status, published_at, withdrawn_at, withdrawal_reason, sample_schema, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?)",
+        "INSERT INTO benchmark (id, account_id, key, name, description, about, methodology, status, published_at, withdrawn_at, withdrawal_reason, sample_schema, created_by_user_id, draft, published_by_user_id, published_as_kind, published_identity_id, attribution_snapshot, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,NULL,NULL,NULL,NULL,?,?)",
       )
       .bind(
         row.id,
@@ -49,6 +57,8 @@ export async function createBenchmark(
         row.methodology,
         row.status,
         row.sample_schema,
+        row.created_by_user_id,
+        row.draft,
         row.created_at,
         row.updated_at,
       )
@@ -177,16 +187,47 @@ export async function updateBenchmark(
   return updated;
 }
 
+/** Flip the draft/ready flag (mark_ready → 0, return_to_draft → 1). */
+export async function setBenchmarkDraft(
+  db: D1Database,
+  id: string,
+  draft: number,
+): Promise<BenchmarkRow | null> {
+  await db
+    .prepare("UPDATE benchmark SET draft=?, updated_at=? WHERE id=?")
+    .bind(draft, Date.now(), id)
+    .run();
+  return getBenchmarkById(db, id);
+}
+
+/** The attribution frozen at publish (the route captures the snapshot; this persists it). */
+export interface PublishAttribution {
+  published_by_user_id: string | null;
+  published_as_kind: PublishedKind;
+  published_identity_id: string | null;
+  /** JSON string of an OrgAttributionSnapshot / PersonalAttributionSnapshot. */
+  attribution_snapshot: string;
+}
+
 export async function publishBenchmark(
   db: D1Database,
   id: string,
   now: number,
+  attribution: PublishAttribution,
 ): Promise<BenchmarkRow | null> {
   await db
     .prepare(
-      "UPDATE benchmark SET status='PUBLISHED', published_at=?, updated_at=? WHERE id=?",
+      "UPDATE benchmark SET status='PUBLISHED', published_at=?, published_by_user_id=?, published_as_kind=?, published_identity_id=?, attribution_snapshot=?, updated_at=? WHERE id=?",
     )
-    .bind(now, now, id)
+    .bind(
+      now,
+      attribution.published_by_user_id,
+      attribution.published_as_kind,
+      attribution.published_identity_id,
+      attribution.attribution_snapshot,
+      now,
+      id,
+    )
     .run();
   return getBenchmarkById(db, id);
 }

@@ -17,6 +17,8 @@ describe("test harness", () => {
       "email_verification",
       "invitation",
       "observation",
+      "publisher_domain",
+      "publisher_identity",
       "run",
       "session",
       "target",

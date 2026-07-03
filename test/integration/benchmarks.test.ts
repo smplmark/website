@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  allowPersonalPublish,
   apiDelete,
   apiGet,
   apiPost,
   apiPut,
   bearer,
   makeBenchmark,
+  markReady,
   markVerified,
   publish,
   register,
@@ -27,6 +29,20 @@ describe("benchmark create + read", () => {
     expect(b.attributes.status).toBe("PRIVATE");
     expect(b.attributes.account).toBe(me.account_id);
     expect(b.attributes.published_at).toBeNull();
+  });
+
+  it("defaults to an empty sample_schema when none is supplied, as a draft", async () => {
+    const me = await register();
+    const res = await apiPost(
+      "/api/v1/benchmarks",
+      { data: { type: "benchmark", attributes: { key: "no-schema", name: "No Schema" } } },
+      bearer(me.token),
+    );
+    expect(res.status).toBe(201);
+    const b = ((await res.json()) as { data: Resource }).data;
+    expect(b.attributes.sample_schema).toEqual({ metrics: [], derived: [] });
+    expect(b.attributes.draft).toBe(true);
+    expect(b.attributes.created_by).toBe(me.user_id);
   });
 
   it("hides a PRIVATE benchmark from anonymous reads (404) but shows it to the owner", async () => {
@@ -59,13 +75,27 @@ describe("publish gate + lifecycle", () => {
   it("blocks publishing until the owner's email is verified", async () => {
     const me = await register();
     const b = await makeBenchmark(me.token);
+    await markReady(me.token, b.id);
+    await allowPersonalPublish(b.id);
     const blocked = await apiPost(`/api/v1/benchmarks/${b.id}/actions/publish`, undefined, bearer(me.token));
     expect(blocked.status).toBe(403);
 
     await markVerified(me.user_id);
     const ok = await apiPost(`/api/v1/benchmarks/${b.id}/actions/publish`, undefined, bearer(me.token));
     expect(ok.status).toBe(200);
-    expect(((await ok.json()) as { data: Resource }).data.attributes.status).toBe("PUBLISHED");
+    const published = ((await ok.json()) as { data: Resource }).data;
+    expect(published.attributes.status).toBe("PUBLISHED");
+    expect(published.attributes.draft).toBe(false);
+    expect((published.attributes.published_as as { kind: string }).kind).toBe("PERSONAL");
+  });
+
+  it("won't publish a benchmark that is still a draft (409)", async () => {
+    const me = await register();
+    await markVerified(me.user_id);
+    const b = await makeBenchmark(me.token);
+    await allowPersonalPublish(b.id);
+    const res = await apiPost(`/api/v1/benchmarks/${b.id}/actions/publish`, undefined, bearer(me.token));
+    expect(res.status).toBe(409);
   });
 
   it("publish is a one-way door (re-publish → 409)", async () => {

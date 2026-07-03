@@ -243,12 +243,14 @@ const account = registerEntity(
     name: z.string().openapi({ description: "The account's display name." }),
     description: z.string().nullable().openapi({ description: "A short description of the account, or null." }),
     url: z.string().nullable().openapi({ description: "The account's website URL, or null." }),
+    allow_personal_publish: z.boolean().openapi({ description: "Whether members may publish their own benchmarks under their personal identity without an admin. When false, publishing is routed through an admin." }),
     created_at: dateTime("When the account was created."),
   }),
   z.object({
     name: z.string().openapi({ description: "The account's display name." }),
     description: z.string().nullable().openapi({ description: "A short description of the account." }),
     url: z.string().nullable().openapi({ description: "The account's website URL." }),
+    allow_personal_publish: z.boolean().optional().openapi({ description: "Whether members may publish their own benchmarks under their personal identity. Omit to leave the current setting unchanged." }),
   }),
 );
 
@@ -368,6 +370,23 @@ const apiKey = registerEntity(
   }),
 );
 
+const PublishedAs = z
+  .object({
+    kind: z
+      .enum(["PERSONAL", "ORGANIZATION"])
+      .openapi({ description: "How the benchmark is attributed: PERSONAL (its author) or ORGANIZATION (a publisher identity)." }),
+    identity: z.string().nullable().optional().openapi({ description: "The publisher identity the benchmark was published under (ORGANIZATION only). Null if that identity has since been deleted." }),
+    name: z.string().optional().openapi({ description: "The organization brand name captured at publish (ORGANIZATION only)." }),
+    logo_url: z.string().nullable().optional().openapi({ description: "The organization logo captured at publish (ORGANIZATION only), or null." }),
+    verified_domains: z.array(z.string()).optional().openapi({ description: "The domains that were verified at the instant of publish (ORGANIZATION only)." }),
+    display_name: z.string().nullable().optional().openapi({ description: "The author's display name captured at publish (PERSONAL only), or null." }),
+    gravatar_hash: z.string().optional().openapi({ description: "A SHA-256 hash of the author's email captured at publish (PERSONAL only), for rendering an avatar." }),
+  })
+  .openapi("PublishedAs", {
+    description:
+      "The attribution badge for a published benchmark, frozen at the moment of publishing. Rendered from this snapshot, never a live lookup, so it is unaffected if a domain later lapses or the identity is deleted.",
+  });
+
 const benchmark = registerEntity(
   "Benchmark",
   "benchmark",
@@ -381,6 +400,10 @@ const benchmark = registerEntity(
     status: z
       .enum(["PRIVATE", "PUBLISHED", "WITHDRAWN"])
       .openapi({ description: "The benchmark's lifecycle state. PRIVATE benchmarks are visible only to the account; PUBLISHED benchmarks are public; WITHDRAWN benchmarks are no longer public." }),
+    draft: z.boolean().openapi({ description: "Whether the benchmark is still a draft. A draft is fully editable; when marked ready (draft false) its data is locked until it is published or returned to draft. A benchmark cannot be published while it is a draft." }),
+    created_by: z.string().nullable().openapi({ description: "The user who created the benchmark, or null if it was created by an API key." }),
+    published_by: z.string().nullable().optional().openapi({ description: "The user who published the benchmark. Present only once published." }),
+    published_as: PublishedAs.optional(),
     published_at: dateTime("When the benchmark was published, or null if it has not been published.").nullable(),
     withdrawn_at: dateTime("When the benchmark was withdrawn, or null.").nullable(),
     withdrawal_reason: z.string().nullable().openapi({ description: "The stated reason the benchmark was withdrawn, or null." }),
@@ -468,6 +491,46 @@ const observation = registerEntity(
       .optional()
       .openapi({ description: "A flat map of stored metric name to numeric value.", type: "object" }),
     meta: jsonObject("Arbitrary structured metadata to attach to the observation.").optional(),
+  }),
+);
+
+const publisherIdentity = registerEntity(
+  "PublisherIdentity",
+  "publisher_identity",
+  z.object({
+    account: idRef("The account that owns this publisher identity."),
+    key: z.string().openapi({ description: "The identity's human-readable, URL-safe handle, unique within the account." }),
+    name: z.string().openapi({ description: "The organization's display brand name, e.g. \"Microsoft\"." }),
+    logo_url: z.string().nullable().openapi({ description: "A URL to the organization's logo, or null." }),
+    created_at: dateTime("When the identity was created."),
+    updated_at: dateTime("When the identity was last updated."),
+  }),
+  z.object({
+    key: z.string().openapi({ description: "The identity's human-readable, URL-safe handle." }),
+    name: z.string().openapi({ description: "The organization's display brand name." }),
+    logo_url: z.string().nullable().optional().openapi({ description: "A URL to the organization's logo." }),
+  }),
+);
+
+const publisherDomain = registerEntity(
+  "PublisherDomain",
+  "publisher_domain",
+  z.object({
+    account: idRef("The account that owns this domain claim."),
+    publisher_identity: idRef("The publisher identity this domain belongs to."),
+    domain: z.string().openapi({ description: "The exact registrable domain being claimed, e.g. \"microsoft.com\" (no subdomain inference)." }),
+    status: z
+      .enum(["PENDING", "VERIFIED", "LAPSED"])
+      .openapi({ description: "The domain's verification state. PENDING awaits a successful check; VERIFIED has proven ownership; LAPSED was verified but the record has since disappeared." }),
+    verification_token: z.string().openapi({ description: "The TXT record value to add to your domain's DNS to prove ownership. Add a TXT record whose value is exactly this string, then run the verify action." }),
+    verified: z.boolean().openapi({ description: "Whether the domain is currently verified." }),
+    verified_at: dateTime("When the domain was last verified, or null if it has never verified.").nullable(),
+    last_checked_at: dateTime("When the domain was last checked, or null if it has never been checked.").nullable(),
+    created_at: dateTime("When the domain claim was created."),
+  }),
+  z.object({
+    publisher_identity: idRef("The publisher identity to add the domain to."),
+    domain: z.string().openapi({ description: "The exact registrable domain to claim, e.g. \"microsoft.com\"." }),
   }),
 );
 
@@ -1108,16 +1171,77 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
-  path: "/api/v1/benchmarks/{id}/actions/publish",
+  path: "/api/v1/benchmarks/{id}/actions/mark_ready",
   tags: ["Benchmarks"],
-  summary: "Publish a benchmark",
-  description: "Makes the benchmark and its data publicly readable.",
+  summary: "Mark a benchmark ready to publish",
+  description:
+    "Moves the benchmark out of draft. Its data is then locked until it is published or returned to draft. Allowed for the benchmark's author or an admin.",
   security: bearerSecurity,
   request: { params: benchmarkIdParam },
   responses: {
+    "200": domainResponse(benchmark.Response, "The benchmark, now marked ready."),
+    ...commonErrors,
+    "409": errorJson("Only a private benchmark can be marked ready."),
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/benchmarks/{id}/actions/return_to_draft",
+  tags: ["Benchmarks"],
+  summary: "Return a benchmark to draft",
+  description:
+    "Unlocks a benchmark that was marked ready so it can be edited again. Serves as both author recall and admin reject; an optional reason is echoed back in the response meta.",
+  security: bearerSecurity,
+  request: {
+    params: benchmarkIdParam,
+    body: domainBody(
+      z
+        .object({
+          reason: z.string().optional().openapi({ description: "An optional note explaining why the benchmark was returned to draft." }),
+        })
+        .openapi("BenchmarkReturnToDraftRequest", { description: "Details for returning a benchmark to draft." }),
+      "An optional reason.",
+    ),
+  },
+  responses: {
+    "200": domainResponse(benchmark.Response, "The benchmark, returned to draft."),
+    ...commonErrors,
+    "409": errorJson("Only a private benchmark can be returned to draft."),
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/benchmarks/{id}/actions/publish",
+  tags: ["Benchmarks"],
+  summary: "Publish a benchmark",
+  description:
+    "Makes the benchmark and its data publicly readable, attributing it either to an organization identity (pass publisher_identity, admin only) or to the author personally (omit it, when the account allows personal publishing). The benchmark must be marked ready first, and requires a signed-in user — API keys cannot publish.",
+  security: bearerSecurity,
+  request: {
+    params: benchmarkIdParam,
+    body: {
+      required: false,
+      description: "How to attribute the published benchmark. Omit entirely for a personal publish.",
+      content: {
+        "application/vnd.api+json": {
+          schema: z
+            .object({
+              publisher_identity: z
+                .string()
+                .optional()
+                .openapi({ description: "The publisher identity to attribute the benchmark to. Omit (or pass \"self\") to publish under the author's personal identity." }),
+            })
+            .openapi("BenchmarkPublishRequest", { description: "How to attribute the published benchmark." }),
+        },
+      },
+    },
+  },
+  responses: {
     "200": domainResponse(benchmark.Response, "The published benchmark."),
     ...commonErrors,
-    "409": errorJson("The benchmark cannot be published from its current state."),
+    "409": errorJson("The benchmark cannot be published from its current state, or the chosen organization identity has no verified domain."),
   },
 });
 
@@ -1383,6 +1507,152 @@ registry.registerPath({
   },
 });
 
+// ── Paths: Publisher identities ──────────────────────────────────────────────
+
+const publisherIdentityIdParam = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, description: "The id of the publisher identity." }),
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/publisher_identities",
+  tags: ["Publisher identities"],
+  summary: "Create a publisher identity",
+  description: "Admin-only. Creates an organization brand a benchmark can later be published under.",
+  security: bearerSecurity,
+  request: { body: domainBody(publisherIdentity.Request, "The identity to create.") },
+  responses: {
+    "201": domainResponse(publisherIdentity.Response, "The created publisher identity."),
+    ...commonErrors,
+    "409": errorJson("A publisher identity with that key already exists in the account."),
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/publisher_identities",
+  tags: ["Publisher identities"],
+  summary: "List publisher identities",
+  description: "Lists the current account's publisher identities.",
+  security: bearerSecurity,
+  parameters: [filterParam("key", "Limit results to the identity with this key.")],
+  responses: {
+    "200": domainResponse(publisherIdentity.ListResponse, "The account's publisher identities."),
+    ...commonErrors,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/publisher_identities/{id}",
+  tags: ["Publisher identities"],
+  summary: "Get a publisher identity by id",
+  security: bearerSecurity,
+  request: { params: publisherIdentityIdParam },
+  responses: {
+    "200": domainResponse(publisherIdentity.Response, "The requested publisher identity."),
+    ...commonErrors,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/v1/publisher_identities/{id}",
+  tags: ["Publisher identities"],
+  summary: "Update a publisher identity",
+  description: "Admin-only.",
+  security: bearerSecurity,
+  request: { params: publisherIdentityIdParam, body: domainBody(publisherIdentity.Request, "The updated identity.") },
+  responses: {
+    "200": domainResponse(publisherIdentity.Response, "The updated publisher identity."),
+    ...commonErrors,
+    "409": errorJson("A publisher identity with that key already exists in the account."),
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/v1/publisher_identities/{id}",
+  tags: ["Publisher identities"],
+  summary: "Delete a publisher identity",
+  description:
+    "Admin-only. Allowed even if a published benchmark references it — that benchmark keeps its frozen attribution badge; only future publishes are affected.",
+  security: bearerSecurity,
+  request: { params: publisherIdentityIdParam },
+  responses: {
+    "204": { description: "The publisher identity (and its domains) were deleted." },
+    ...commonErrors,
+  },
+});
+
+// ── Paths: Publisher domains ─────────────────────────────────────────────────
+
+const publisherDomainIdParam = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, description: "The id of the publisher domain." }),
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/publisher_domains",
+  tags: ["Publisher domains"],
+  summary: "Add a domain to a publisher identity",
+  description:
+    "Admin-only. Returns a verification token to add to the domain's DNS as a TXT record; then call the verify action.",
+  security: bearerSecurity,
+  request: { body: domainBody(publisherDomain.Request, "The domain to claim.") },
+  responses: {
+    "201": domainResponse(publisherDomain.Response, "The created domain claim, including the token to add to DNS."),
+    ...commonErrors,
+    "409": errorJson("That domain is already claimed by this identity."),
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/v1/publisher_domains",
+  tags: ["Publisher domains"],
+  summary: "List publisher domains",
+  description: "Lists the current account's domain claims.",
+  security: bearerSecurity,
+  parameters: [
+    filterParam("publisher_identity", "Limit results to domains of this publisher identity id."),
+    filterParam("status", "Limit results to domains in this state (PENDING, VERIFIED, LAPSED)."),
+  ],
+  responses: {
+    "200": domainResponse(publisherDomain.ListResponse, "The account's publisher domains."),
+    ...commonErrors,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/v1/publisher_domains/{id}/actions/verify",
+  tags: ["Publisher domains"],
+  summary: "Verify a domain",
+  description:
+    "Admin-only. Checks the domain's DNS TXT records now for the verification token and updates the domain's status accordingly.",
+  security: bearerSecurity,
+  request: { params: publisherDomainIdParam },
+  responses: {
+    "200": domainResponse(publisherDomain.Response, "The domain, with its updated verification status."),
+    ...commonErrors,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/v1/publisher_domains/{id}",
+  tags: ["Publisher domains"],
+  summary: "Remove a domain claim",
+  description: "Admin-only.",
+  security: bearerSecurity,
+  request: { params: publisherDomainIdParam },
+  responses: {
+    "204": { description: "The domain claim was removed." },
+    ...commonErrors,
+  },
+});
+
 // ── Document assembly ────────────────────────────────────────────────────────
 
 /**
@@ -1410,6 +1680,8 @@ export function buildOpenApiDocument(serverUrl: string): Record<string, unknown>
       { name: "Contact" },
       { name: "Invitations" },
       { name: "Observations" },
+      { name: "Publisher domains" },
+      { name: "Publisher identities" },
       { name: "Runs" },
       { name: "Targets" },
       { name: "Users" },

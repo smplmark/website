@@ -8,6 +8,8 @@ import {
   serializeBenchmark,
   serializeInvitation,
   serializeObservation,
+  serializePublisherDomain,
+  serializePublisherIdentity,
   serializeRun,
   serializeTarget,
   serializeUser,
@@ -19,6 +21,8 @@ import type {
   BenchmarkRow,
   InvitationRow,
   ObservationRow,
+  PublisherDomainRow,
+  PublisherIdentityRow,
   RunRow,
   SampleSchema,
   TargetRow,
@@ -41,15 +45,17 @@ describe("serializeUser", () => {
 });
 
 describe("serializeAccount", () => {
-  it("emits key/name/description/url and ISO created_at", () => {
+  it("emits key/name/description/url, the personal-publish flag, and ISO created_at", () => {
     const row: AccountRow = {
       id: "a1", key: "smplkit", name: "smplkit",
-      description: "we build things", url: "https://smplkit.com", created_at: T0,
+      description: "we build things", url: "https://smplkit.com",
+      allow_personal_publish: 1, created_at: T0,
     };
     expect(serializeAccount(row).attributes).toEqual({
       key: "smplkit", name: "smplkit", description: "we build things",
-      url: "https://smplkit.com", created_at: ISO0,
+      url: "https://smplkit.com", allow_personal_publish: true, created_at: ISO0,
     });
+    expect(serializeAccount({ ...row, allow_personal_publish: 0 }).attributes.allow_personal_publish).toBe(false);
   });
 });
 
@@ -130,34 +136,114 @@ describe("serializeApiKey", () => {
 });
 
 describe("serializeBenchmark", () => {
-  it("maps account and status fields and parses sample_schema", () => {
-    const row: BenchmarkRow = {
-      id: "b1", account_id: "a1", key: "sched", name: "Sched",
-      description: null, about: "long", methodology: "how", status: "WITHDRAWN",
-      published_at: T0, withdrawn_at: T0, withdrawal_reason: "bad data",
-      sample_schema: JSON.stringify({ metrics: [], derived: [] }),
-      created_at: T0, updated_at: T0,
-    };
-    const out = serializeBenchmark(row);
+  const priv: BenchmarkRow = {
+    id: "b1", account_id: "a1", key: "sched", name: "Sched",
+    description: null, about: null, methodology: null, status: "PRIVATE",
+    published_at: null, withdrawn_at: null, withdrawal_reason: null,
+    sample_schema: "{}",
+    created_by_user_id: "u1", draft: 1,
+    published_by_user_id: null, published_as_kind: null, published_identity_id: null,
+    attribution_snapshot: null,
+    created_at: T0, updated_at: T0,
+  };
+
+  it("surfaces draft/created_by, omits published_* while unpublished, and never leaks account_id", () => {
+    const out = serializeBenchmark(priv);
     expect(out.type).toBe("benchmark");
     expect(out.attributes.account).toBe("a1");
-    expect(out.attributes.status).toBe("WITHDRAWN");
-    expect(out.attributes.published_at).toBe(ISO0);
-    expect(out.attributes.withdrawal_reason).toBe("bad data");
-    expect(out.attributes.sample_schema).toEqual({ metrics: [], derived: [] });
+    expect(out.attributes.draft).toBe(true);
+    expect(out.attributes.created_by).toBe("u1");
+    expect(out.attributes.published_at).toBeNull();
+    expect(out.attributes.withdrawn_at).toBeNull();
+    expect(out.attributes).not.toHaveProperty("published_by");
+    expect(out.attributes).not.toHaveProperty("published_as");
     expect(out.attributes).not.toHaveProperty("account_id");
   });
 
-  it("emits null publish/withdraw timestamps as null", () => {
+  it("null created_by for an API-key-created benchmark", () => {
+    expect(serializeBenchmark({ ...priv, created_by_user_id: null }).attributes.created_by).toBeNull();
+  });
+
+  it("renders a PERSONAL attribution badge from the frozen snapshot", () => {
     const row: BenchmarkRow = {
-      id: "b1", account_id: "a1", key: "sched", name: "Sched",
-      description: null, about: null, methodology: null, status: "PRIVATE",
-      published_at: null, withdrawn_at: null, withdrawal_reason: null,
-      sample_schema: "{}", created_at: T0, updated_at: T0,
+      ...priv, status: "PUBLISHED", draft: 0, published_at: T0,
+      published_by_user_id: "u1", published_as_kind: "PERSONAL",
+      attribution_snapshot: JSON.stringify({ display_name: "Ada", email_sha256: "abc123" }),
     };
     const out = serializeBenchmark(row);
-    expect(out.attributes.published_at).toBeNull();
-    expect(out.attributes.withdrawn_at).toBeNull();
+    expect(out.attributes.draft).toBe(false);
+    expect(out.attributes.published_by).toBe("u1");
+    expect(out.attributes.published_as).toEqual({
+      kind: "PERSONAL", display_name: "Ada", gravatar_hash: "abc123",
+    });
+  });
+
+  it("renders an ORGANIZATION attribution badge, parsing sample_schema and keeping a soft identity ref", () => {
+    const row: BenchmarkRow = {
+      ...priv, about: "long", methodology: "how", status: "WITHDRAWN", draft: 0,
+      published_at: T0, withdrawn_at: T0, withdrawal_reason: "bad data",
+      sample_schema: JSON.stringify({ metrics: [], derived: [] }),
+      published_by_user_id: "admin1", published_as_kind: "ORGANIZATION", published_identity_id: "pi1",
+      attribution_snapshot: JSON.stringify({ name: "Acme", logo_url: null, verified_domains: ["acme.com", "acme.io"] }),
+    };
+    const out = serializeBenchmark(row);
+    expect(out.attributes.status).toBe("WITHDRAWN");
+    expect(out.attributes.withdrawal_reason).toBe("bad data");
+    expect(out.attributes.sample_schema).toEqual({ metrics: [], derived: [] });
+    expect(out.attributes.published_by).toBe("admin1");
+    expect(out.attributes.published_as).toEqual({
+      kind: "ORGANIZATION", identity: "pi1", name: "Acme", logo_url: null,
+      verified_domains: ["acme.com", "acme.io"],
+    });
+  });
+});
+
+describe("serializePublisherIdentity", () => {
+  it("emits account/key/name/logo_url and ISO timestamps", () => {
+    const row: PublisherIdentityRow = {
+      id: "pi1", account_id: "a1", key: "microsoft", name: "Microsoft",
+      logo_url: "https://cdn/ms.png", created_at: T0, updated_at: T0,
+    };
+    expect(serializePublisherIdentity(row)).toEqual({
+      type: "publisher_identity",
+      id: "pi1",
+      attributes: {
+        account: "a1", key: "microsoft", name: "Microsoft",
+        logo_url: "https://cdn/ms.png", created_at: ISO0, updated_at: ISO0,
+      },
+    });
+    expect(serializePublisherIdentity({ ...row, logo_url: null }).attributes.logo_url).toBeNull();
+  });
+});
+
+describe("serializePublisherDomain", () => {
+  const base: PublisherDomainRow = {
+    id: "pd1", account_id: "a1", publisher_identity_id: "pi1", domain: "microsoft.com",
+    verification_token: "smplmark-verify=xyz", status: "PENDING",
+    verified_at: null, last_checked_at: null, created_at: T0,
+  };
+  it("surfaces the DNS token and computes `verified`; nulls when never checked", () => {
+    const out = serializePublisherDomain(base);
+    expect(out).toEqual({
+      type: "publisher_domain",
+      id: "pd1",
+      attributes: {
+        account: "a1", publisher_identity: "pi1", domain: "microsoft.com",
+        status: "PENDING", verification_token: "smplmark-verify=xyz", verified: false,
+        verified_at: null, last_checked_at: null, created_at: ISO0,
+      },
+    });
+  });
+  it("marks a VERIFIED domain verified and maps its timestamps", () => {
+    const out = serializePublisherDomain({ ...base, status: "VERIFIED", verified_at: T0, last_checked_at: T0 });
+    expect(out.attributes.verified).toBe(true);
+    expect(out.attributes.verified_at).toBe(ISO0);
+    expect(out.attributes.last_checked_at).toBe(ISO0);
+  });
+  it("a LAPSED domain is not verified but keeps its last verified_at", () => {
+    const out = serializePublisherDomain({ ...base, status: "LAPSED", verified_at: T0, last_checked_at: T0 });
+    expect(out.attributes.verified).toBe(false);
+    expect(out.attributes.status).toBe("LAPSED");
   });
 });
 

@@ -19,6 +19,8 @@ const TABLES = [
   "run",
   "target",
   "benchmark",
+  "publisher_domain",
+  "publisher_identity",
   "api_key",
   "email_verification",
   "session",
@@ -106,6 +108,47 @@ export async function markVerified(userId: string): Promise<void> {
   await env.DB.prepare("UPDATE user SET email_verified = 1 WHERE id = ?").bind(userId).run();
 }
 
+/** Invite an email to an account at a role (admin token); returns the invitation resource (+ token). */
+export async function invite(token: string, email: string, role: string): Promise<Resource> {
+  const res = await apiPost(
+    "/api/v1/invitations",
+    { data: { type: "invitation", attributes: { email, role } } },
+    bearer(token),
+  );
+  expect(res.status).toBe(201);
+  return ((await res.json()) as { data: Resource }).data;
+}
+
+/** Register `email`, accept the invite, and switch into the inviter's account; returns a scoped token. */
+export async function joinAs(
+  email: string,
+  inviterAccountId: string,
+  inviteToken: string,
+): Promise<{ user: Registered; memberToken: string }> {
+  const user = await register(email);
+  const acc = await apiPost(
+    "/api/v1/invitations/accept",
+    { data: { type: "invitation", attributes: { token: inviteToken } } },
+    bearer(user.token),
+  );
+  expect(acc.status).toBe(200);
+  const sw = await authPost("/api/v1/auth/switch", { account_id: inviterAccountId }, bearer(user.token));
+  expect(sw.status).toBe(200);
+  const memberToken = ((await sw.json()) as { token: string }).token;
+  return { user, memberToken };
+}
+
+/** Invite + join in one step, returning the new member's session token (scoped to the account) + user. */
+export async function addMember(
+  ownerToken: string,
+  ownerAccountId: string,
+  email: string,
+  role: string,
+): Promise<{ user: Registered; memberToken: string }> {
+  const inv = await invite(ownerToken, email, role);
+  return joinAs(email, ownerAccountId, inv.attributes.token as string);
+}
+
 /** Create a benchmark (PRIVATE by default); returns its resource. */
 export async function makeBenchmark(
   token: string,
@@ -173,9 +216,33 @@ export async function mintKey(
   return { key: resource.attributes.key as string, resource };
 }
 
-/** Publish a benchmark (verifies the owner's email first so the gate passes). */
+/** Mark a benchmark ready to publish (author or admin). */
+export async function markReady(token: string, benchmarkId: string): Promise<void> {
+  const res = await apiPost(
+    `/api/v1/benchmarks/${benchmarkId}/actions/mark_ready`,
+    undefined,
+    bearer(token),
+  );
+  expect(res.status).toBe(200);
+}
+
+/** Turn on the personal-publish opt-in for the account that owns this benchmark (test shortcut). */
+export async function allowPersonalPublish(benchmarkId: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE account SET allow_personal_publish = 1 WHERE id = (SELECT account_id FROM benchmark WHERE id = ?)",
+  )
+    .bind(benchmarkId)
+    .run();
+}
+
+/**
+ * Publish a benchmark under the author's personal identity: verify the owner's email, mark ready, and
+ * enable the account's personal-publish opt-in, then publish. Mirrors the common author-driven path.
+ */
 export async function publish(token: string, userId: string, benchmarkId: string): Promise<Resource> {
   await markVerified(userId);
+  await markReady(token, benchmarkId);
+  await allowPersonalPublish(benchmarkId);
   const res = await apiPost(`/api/v1/benchmarks/${benchmarkId}/actions/publish`, undefined, bearer(token));
   expect(res.status).toBe(200);
   return ((await res.json()) as { data: Resource }).data;

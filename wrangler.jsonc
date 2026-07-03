@@ -49,6 +49,13 @@
     }
   ],
 
+  // Cron: re-check TXT-verified publisher domains daily and lapse any whose record is gone (see
+  // src/index.ts scheduled() → src/publish/sweep.ts). A lapse blocks new publishes under the identity
+  // but never rewrites a published benchmark's frozen attribution snapshot.
+  "triggers": {
+    "crons": ["17 4 * * *"]
+  },
+
   // Runtime secrets are NOT committed vars. Set them with `wrangler secret put <NAME>` in prod and
   // `.dev.vars` locally (tests supply their own via vitest.config.ts). Required for full function:
   //   APP_AUTH_SECRET        — session-JWT signing (HS256)

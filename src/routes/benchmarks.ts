@@ -1,17 +1,30 @@
 import { Hono, type Context } from "hono";
-import { covers, isPublicStatus, requireWrite } from "../authz";
 import {
-  accountHasVerifiedUser,
-} from "../data/accounts";
+  canAdmin,
+  canPublishOrg,
+  canPublishPersonal,
+  canWrite,
+  covers,
+  isAuthor,
+  isPublicStatus,
+  RBAC_REASONS,
+  requireWrite,
+} from "../authz";
+import { sha256Hex } from "../auth/crypto";
+import { accountHasVerifiedUser, getAccountById } from "../data/accounts";
 import {
   createBenchmark,
   deleteBenchmarkCascade,
   getBenchmarkById,
   listBenchmarks,
   publishBenchmark,
+  setBenchmarkDraft,
   updateBenchmark,
   withdrawBenchmark,
 } from "../data/benchmarks";
+import { getPublisherIdentityById } from "../data/publisher_identities";
+import { listVerifiedDomains } from "../data/publisher_domains";
+import { getUserById } from "../data/users";
 import {
   BadRequestError,
   ConflictError,
@@ -31,8 +44,15 @@ import {
   validateSampleSchema,
 } from "../schema/sample_schema";
 import { serializeBenchmark } from "../serialize/resource";
-import type { BenchmarkRow, SampleSchema, Status } from "../types";
-import { readAttributes, readPagination, readSort } from "./shared";
+import type {
+  AuthContext,
+  BenchmarkRow,
+  OrgAttributionSnapshot,
+  PersonalAttributionSnapshot,
+  SampleSchema,
+  Status,
+} from "../types";
+import { assertBenchmarkEditable, readAttributes, readPagination, readSort } from "./shared";
 
 const EMPTY_SCHEMA: SampleSchema = { metrics: [], derived: [] };
 const PUBLIC_STATUSES: Status[] = ["PUBLISHED", "WITHDRAWN"];
@@ -49,6 +69,15 @@ async function loadOwned(c: Context<AppBindings>, id: string): Promise<Benchmark
     throw new NotFoundError();
   }
   return row;
+}
+
+/** The draft/ready flag transitions (§2): the author (a writer) or any admin. */
+function assertCanManageDraft(auth: AuthContext, benchmark: BenchmarkRow): void {
+  if (!(canAdmin(auth) || (isAuthor(auth, benchmark) && canWrite(auth)))) {
+    throw new ForbiddenError(
+      "Only the benchmark's author or an admin can change its draft state.",
+    );
+  }
 }
 
 benchmarks.post("/", requireAuth, async (c) => {
@@ -74,6 +103,7 @@ benchmarks.post("/", requireAuth, async (c) => {
     about,
     methodology,
     sample_schema,
+    created_by_user_id: auth.user_id, // null when an API key creates it
   });
   return resourceResponse(serializeBenchmark(row), { status: 201 });
 });
@@ -121,6 +151,7 @@ benchmarks.get("/:id", optionalAuth, async (c) => {
 
 benchmarks.put("/:id", requireAuth, async (c) => {
   const existing = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(existing); // marked-ready subtree is frozen until publish/return-to-draft
   const attrs = await readAttributes(c);
   const name = requireString(attrs, "name");
   const description = optionalStringOrNull(attrs, "description") ?? null;
@@ -146,6 +177,7 @@ benchmarks.put("/:id", requireAuth, async (c) => {
 
 benchmarks.delete("/:id", requireAuth, async (c) => {
   const existing = await loadOwned(c, c.req.param("id"));
+  assertBenchmarkEditable(existing); // can't delete out of the marked-ready state
   if (existing.status !== "PRIVATE") {
     throw new ConflictError(
       "Published benchmark data is append-only and cannot be deleted; withdraw it instead.",
@@ -155,25 +187,112 @@ benchmarks.delete("/:id", requireAuth, async (c) => {
   return noContentResponse();
 });
 
-benchmarks.post("/:id/actions/publish", requireAuth, async (c) => {
+// ── Draft workflow (§2) ──────────────────────────────────────────────────────
+
+benchmarks.post("/:id/actions/mark_ready", requireAuth, async (c) => {
+  const auth = getAuth(c);
   const existing = await loadOwned(c, c.req.param("id"));
+  assertCanManageDraft(auth, existing);
+  if (existing.status !== "PRIVATE") {
+    throw new ConflictError("Only a private benchmark can be marked ready.");
+  }
+  const row = await setBenchmarkDraft(c.env.DB, existing.id, 0);
+  return resourceResponse(serializeBenchmark(row as BenchmarkRow));
+});
+
+benchmarks.post("/:id/actions/return_to_draft", requireAuth, async (c) => {
+  const auth = getAuth(c);
+  const existing = await loadOwned(c, c.req.param("id"));
+  assertCanManageDraft(auth, existing);
+  if (existing.status !== "PRIVATE") {
+    throw new ConflictError("Only a private benchmark can be returned to draft.");
+  }
+  const attrs = await readAttributes(c).catch(() => ({}) as Record<string, unknown>);
+  const reason = optionalStringOrNull(attrs, "reason") ?? null;
+  const row = await setBenchmarkDraft(c.env.DB, existing.id, 1);
+  return resourceResponse(
+    serializeBenchmark(row as BenchmarkRow),
+    reason !== null ? { meta: { reason } } : {},
+  );
+});
+
+// ── Publish / withdraw (§4) ──────────────────────────────────────────────────
+
+benchmarks.post("/:id/actions/publish", requireAuth, async (c) => {
+  const auth = getAuth(c);
+  const existing = await loadOwned(c, c.req.param("id"));
+  // Publish is inherently user-driven — API keys can create/populate, humans publish.
+  if (auth.source !== "SESSION") throw new ForbiddenError(RBAC_REASONS.publishSession);
   if (existing.status !== "PRIVATE") {
     throw new ConflictError("Only a private benchmark can be published.");
   }
-  if (!(await accountHasVerifiedUser(c.env.DB, existing.account_id))) {
-    throw new ForbiddenError(
-      "Verify your email address before publishing a benchmark.",
-    );
+  if (existing.draft !== 0) {
+    throw new ConflictError("Mark the benchmark ready before publishing.");
   }
-  const row = await publishBenchmark(c.env.DB, existing.id, Date.now());
+  if (!(await accountHasVerifiedUser(c.env.DB, existing.account_id))) {
+    throw new ForbiddenError("Verify your email address before publishing a benchmark.");
+  }
+
+  const attrs = await readAttributes(c).catch(() => ({}) as Record<string, unknown>);
+  const identityRef = optionalStringOrNull(attrs, "publisher_identity") ?? null;
+  const now = Date.now();
+
+  // ORGANIZATION publish — a publisher_identity is named (and isn't the "self" sentinel).
+  if (identityRef !== null && identityRef !== "self") {
+    if (!canPublishOrg(auth)) throw new ForbiddenError(RBAC_REASONS.publishOrg);
+    const identity = await getPublisherIdentityById(c.env.DB, identityRef);
+    if (!identity || identity.account_id !== existing.account_id) throw new NotFoundError();
+    const verified = await listVerifiedDomains(c.env.DB, identity.id);
+    if (verified.length === 0) {
+      throw new ConflictError("This organization identity has no verified domain.");
+    }
+    const snapshot: OrgAttributionSnapshot = {
+      name: identity.name,
+      logo_url: identity.logo_url,
+      verified_domains: verified.map((d) => d.domain),
+    };
+    const row = await publishBenchmark(c.env.DB, existing.id, now, {
+      published_by_user_id: auth.user_id,
+      published_as_kind: "ORGANIZATION",
+      published_identity_id: identity.id,
+      attribution_snapshot: JSON.stringify(snapshot),
+    });
+    return resourceResponse(serializeBenchmark(row as BenchmarkRow));
+  }
+
+  // PERSONAL publish — attributed to the author, gated by the account's opt-in.
+  const account = await getAccountById(c.env.DB, existing.account_id);
+  if (!canPublishPersonal(auth, existing, account)) {
+    throw new ForbiddenError(RBAC_REASONS.publishPersonal);
+  }
+  const author = auth.user_id !== null ? await getUserById(c.env.DB, auth.user_id) : null;
+  const snapshot: PersonalAttributionSnapshot = {
+    display_name: author?.display_name ?? null,
+    email_sha256: await sha256Hex((author?.email ?? "").trim().toLowerCase()),
+  };
+  const row = await publishBenchmark(c.env.DB, existing.id, now, {
+    published_by_user_id: auth.user_id,
+    published_as_kind: "PERSONAL",
+    published_identity_id: null,
+    attribution_snapshot: JSON.stringify(snapshot),
+  });
   return resourceResponse(serializeBenchmark(row as BenchmarkRow));
 });
 
 benchmarks.post("/:id/actions/withdraw", requireAuth, async (c) => {
+  const auth = getAuth(c);
   const existing = await loadOwned(c, c.req.param("id"));
+  if (auth.source !== "SESSION") throw new ForbiddenError(RBAC_REASONS.withdrawSession);
   if (existing.status !== "PUBLISHED") {
     throw new ConflictError("Only a published benchmark can be withdrawn.");
   }
+  // Withdraw authority mirrors the publish attribution.
+  if (existing.published_as_kind === "ORGANIZATION") {
+    if (!canAdmin(auth)) throw new ForbiddenError(RBAC_REASONS.admin);
+  } else if (!(isAuthor(auth, existing) || canAdmin(auth))) {
+    throw new ForbiddenError(RBAC_REASONS.withdrawPersonal);
+  }
+
   const attrs = await readAttributes(c).catch(() => ({}) as Record<string, unknown>);
   const reason = optionalStringOrNull(attrs, "withdrawal_reason") ?? null;
   if (reason === null) {
