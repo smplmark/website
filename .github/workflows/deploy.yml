@@ -39,7 +39,26 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Both commands are idempotent (migrations are tracked in d1_migrations; a deploy re-uploads the
+      # same version), so a bounded retry safely absorbs transient Cloudflare API 5xx blips (e.g. the
+      # D1 query endpoint's intermittent "internal error [code: 7500]") without risking partial state.
       - name: Apply D1 migrations (forward-only)
-        run: npx wrangler d1 migrations apply smplmark --remote
+        run: |
+          n=0
+          until [ "$n" -ge 5 ]; do
+            npx wrangler d1 migrations apply smplmark --remote && break
+            n=$((n + 1))
+            echo "::warning::migration apply attempt $n failed (transient Cloudflare API error?); retrying in 20s"
+            sleep 20
+          done
+          [ "$n" -lt 5 ]
       - name: Deploy Worker
-        run: npx wrangler deploy
+        run: |
+          n=0
+          until [ "$n" -ge 5 ]; do
+            npx wrangler deploy && break
+            n=$((n + 1))
+            echo "::warning::deploy attempt $n failed (transient Cloudflare API error?); retrying in 20s"
+            sleep 20
+          done
+          [ "$n" -lt 5 ]
