@@ -55,6 +55,27 @@
             </div>
             <p class="muted" id="settings-note" style="margin-top:1rem;display:none;">Only admins can rename the account.</p>
           </div>
+
+          <div class="panel">
+            <div class="sectionHead"><h2>Publishing</h2></div>
+            <div class="profileInfo" style="border:none;padding:0;">
+              <div class="profileRow">
+                <span class="profileRowLabel">Personal publishing
+                  <span class="muted" style="display:block;font-weight:400;font-size:0.85rem;margin-top:0.15rem;max-width:48ch;">
+                    Let members publish their own benchmarks attributed to themselves (name + avatar),
+                    without an organization identity. Admins can always publish under a verified identity.
+                  </span>
+                </span>
+                <span class="profileRowValue">
+                  <label class="switchRow">
+                    <input type="checkbox" id="allow-personal" disabled />
+                    <span class="switchState" id="allow-personal-state">…</span>
+                  </label>
+                </span>
+              </div>
+              <p id="personal-msg" class="form-status"></p>
+            </div>
+          </div>
         </div>
       </main>
     </div>

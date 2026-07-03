@@ -15,7 +15,10 @@
   function setMsg(el, text, kind) {
     if (!el) return;
     el.textContent = text || "";
-    el.className = "form-status" + (text ? " is-" + (kind || "error") : "");
+    // Toggle the status modifier without clobbering marker classes (e.g. run-msg), which are used to
+    // re-locate per-target/per-run message elements after a render.
+    el.classList.remove("is-error", "is-success");
+    if (text) el.classList.add("is-" + (kind || "error"));
   }
   function cssEsc(s) {
     if (window.CSS && CSS.escape) return CSS.escape(s);
@@ -102,12 +105,25 @@
     const a = b.attributes || {};
     const status = String(a.status || "").toUpperCase();
     const id = esc(b.id);
+    // A private benchmark is either still a draft or marked ready to publish (draft=false).
+    const isReady = status === "PRIVATE" && a.draft === false;
     let actions = "";
     if (!CAN_WRITE) {
       // Viewers can open published benchmarks but not manage anything.
       actions = status === "PRIVATE" ? "" : viewLink(a.key);
     } else if (status === "PRIVATE") {
-      actions = btn("Publish", "act-publish", id) + btn("Manage", "act-manage", id) + btn("Delete", "act-delete", id, "danger");
+      if (isReady) {
+        actions =
+          btn("Publish…", "act-publish", id, "primary") +
+          btn("Return to draft", "act-undraft", id) +
+          btn("Manage", "act-manage", id) +
+          btn("Delete", "act-delete", id, "danger");
+      } else {
+        actions =
+          btn("Mark ready", "act-markready", id) +
+          btn("Manage", "act-manage", id) +
+          btn("Delete", "act-delete", id, "danger");
+      }
     } else if (status === "PUBLISHED") {
       actions = viewLink(a.key) + btn("Manage", "act-manage", id) + btn("Withdraw", "act-withdraw", id, "danger");
     } else {
@@ -117,16 +133,29 @@
       '<tr data-id="' + id + '">' +
       "<td><code>" + esc(a.key || "") + "</code></td>" +
       "<td>" + esc(a.name || "") + "</td>" +
-      "<td>" + SM.statusPill(status, status) + "</td>" +
+      "<td>" + statusCell(a, status, isReady) + "</td>" +
       '<td class="actions">' + actions + "</td>" +
       "</tr>"
     );
+  }
+  // Status column: the lifecycle pill, plus draft/ready sub-state for private benchmarks and the
+  // frozen attribution for published ones.
+  function statusCell(a, status, isReady) {
+    let html = SM.statusPill(status, status);
+    if (status === "PRIVATE") {
+      html += " " + (isReady ? SM.statusPill("ready", "ready") : SM.statusPill("draft", "draft"));
+    } else if (a.published_as) {
+      const pa = a.published_as;
+      const who = pa.kind === "ORGANIZATION" ? (pa.name || "") : (pa.display_name || "you");
+      html += ' <span class="muted attributionLabel">as ' + esc(who) + "</span>";
+    }
+    return html;
   }
   function viewLink(key) {
     return '<a class="button buttonSecondary buttonSmall" href="/benchmarks/' + encodeURIComponent(key || "") + '">View</a>';
   }
   function btn(label, cls, id, extra) {
-    const kind = extra === "danger" ? "buttonDanger" : "buttonSecondary";
+    const kind = extra === "danger" ? "buttonDanger" : extra === "primary" ? "buttonPrimary" : "buttonSecondary";
     return '<button type="button" class="button ' + kind + ' buttonSmall ' + cls + '" data-id="' + esc(id) + '">' + esc(label) + "</button>";
   }
 
@@ -134,18 +163,155 @@
     const byId = {};
     list.forEach((b) => { byId[b.id] = b; });
     const body = $("benchmarks-body");
-    body.querySelectorAll(".act-publish").forEach((el) => el.addEventListener("click", () => doPublish(el.dataset.id)));
+    body.querySelectorAll(".act-markready").forEach((el) => el.addEventListener("click", () => doMarkReady(el.dataset.id)));
+    body.querySelectorAll(".act-undraft").forEach((el) => el.addEventListener("click", () => doReturnToDraft(el.dataset.id)));
+    body.querySelectorAll(".act-publish").forEach((el) => el.addEventListener("click", () => openPublishModal(byId[el.dataset.id])));
     body.querySelectorAll(".act-withdraw").forEach((el) => el.addEventListener("click", () => doWithdraw(el.dataset.id)));
     body.querySelectorAll(".act-delete").forEach((el) => el.addEventListener("click", () => doDelete(el.dataset.id)));
     body.querySelectorAll(".act-manage").forEach((el) => el.addEventListener("click", () => openManage(byId[el.dataset.id])));
   }
 
-  async function doPublish(id) {
+  // ── Draft workflow ──
+  async function doMarkReady(id) {
     setMsg($("benchmarks-msg"), "");
     try {
-      await apiFetch("/api/v1/benchmarks/" + encodeURIComponent(id) + "/actions/publish", { method: "POST" });
+      await apiFetch("/api/v1/benchmarks/" + encodeURIComponent(id) + "/actions/mark_ready", { method: "POST" });
       await loadBenchmarks();
     } catch (err) { setMsg($("benchmarks-msg"), err.message, "error"); }
+  }
+
+  async function doReturnToDraft(id) {
+    const reason = window.prompt("Return to draft — optional note (why it's going back):", "");
+    if (reason === null) return; // cancelled
+    setMsg($("benchmarks-msg"), "");
+    const body = reason.trim() ? jsonapiBody("benchmark", { reason: reason.trim() }) : undefined;
+    try {
+      await apiFetch("/api/v1/benchmarks/" + encodeURIComponent(id) + "/actions/return_to_draft", { method: "POST", body });
+      await loadBenchmarks();
+    } catch (err) { setMsg($("benchmarks-msg"), err.message, "error"); }
+  }
+
+  // ── Publish attribution modal ──
+  // Fetch the account's organization identities and their VERIFIED domains (admins only — org
+  // publishing is admin-gated). An identity is publishable only when it has ≥1 verified domain.
+  async function loadOrgIdentities() {
+    const [identsDoc, domainsDoc] = await Promise.all([
+      apiFetch("/api/v1/publisher_identities"),
+      apiFetch("/api/v1/publisher_domains?filter[status]=VERIFIED"),
+    ]);
+    const idents = (identsDoc && identsDoc.data) || [];
+    const verifiedByIdentity = {};
+    ((domainsDoc && domainsDoc.data) || []).forEach((d) => {
+      const pid = d.attributes.publisher_identity;
+      (verifiedByIdentity[pid] = verifiedByIdentity[pid] || []).push(d.attributes.domain);
+    });
+    return idents.map((i) => ({ id: i.id, name: i.attributes.name, domains: verifiedByIdentity[i.id] || [] }));
+  }
+
+  function optionRow(value, title, enabled, detail) {
+    return (
+      '<label class="publishOption' + (enabled ? "" : " isDisabled") + '">' +
+      '<input type="radio" name="attribution" value="' + esc(value) + '"' + (enabled ? "" : " disabled") + " />" +
+      '<span class="publishOptionBody"><span class="publishOptionTitle">' + esc(title) + "</span>" +
+      (detail ? '<span class="publishOptionDetail">' + esc(detail) + "</span>" : "") +
+      "</span></label>"
+    );
+  }
+
+  function openPublishModal(b) {
+    if (!b) return;
+    const a = b.attributes || {};
+    const existing = $("publish-modal");
+    if (existing) existing.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "modalOverlay";
+    overlay.id = "publish-modal";
+    overlay.innerHTML =
+      '<div class="modalPanel" role="dialog" aria-modal="true" aria-labelledby="publish-title">' +
+      '<div class="modalHeader"><h2 class="modalTitle" id="publish-title">Publish “' + esc(a.name || a.key || "") + '”</h2>' +
+      '<p class="modalDescription">Publishing is a one-way step and freezes this benchmark\'s interpretation. Choose how it\'s attributed.</p></div>' +
+      '<form class="form" id="publish-form">' +
+      '<div id="publish-options"><p class="muted">Loading publishing options…</p></div>' +
+      '<p id="publish-msg" class="form-status"></p>' +
+      '<div class="modalActions">' +
+      '<button type="button" class="button buttonSecondary buttonSmall" id="publish-cancel">Cancel</button>' +
+      '<button type="submit" class="button buttonPrimary buttonSmall" id="publish-submit" disabled>Publish</button>' +
+      "</div></form></div>";
+    document.body.appendChild(overlay);
+    overlay.style.display = "grid";
+
+    const close = () => overlay.remove();
+    $("publish-cancel").addEventListener("click", close);
+    overlay.addEventListener("mousedown", (ev) => { if (ev.target === overlay) close(); });
+    const onEsc = (ev) => { if (ev.key === "Escape") { close(); document.removeEventListener("keydown", onEsc); } };
+    document.addEventListener("keydown", onEsc);
+    $("publish-form").addEventListener("submit", (ev) => { ev.preventDefault(); submitPublish(b, overlay); });
+
+    buildPublishOptions(b);
+  }
+
+  async function buildPublishOptions(b) {
+    const a = b.attributes || {};
+    const host = $("publish-options");
+    const submit = $("publish-submit");
+    const isAuthor = !!(USER_ID && a.created_by === USER_ID);
+    const personalAvailable = ALLOW_PERSONAL && isAuthor;
+
+    // Personal option — always shown so the reason it's unavailable is visible.
+    let personalDetail = "Attributed to you.";
+    if (!ALLOW_PERSONAL) personalDetail = "Personal publishing is off for this account (enable it in Settings).";
+    else if (!isAuthor) personalDetail = "Only the benchmark's author can publish it personally.";
+    let rows = [optionRow("personal", "Publish personally", personalAvailable, personalDetail)];
+
+    // Organization options — admins only.
+    if (CAN_ADMIN) {
+      let orgs = null;
+      try {
+        orgs = await loadOrgIdentities();
+      } catch (err) {
+        host.innerHTML = rows.join("") + '<p class="form-status is-error" style="margin-top:0.4rem;">Couldn\'t load organization identities: ' + esc(err.message) + "</p>";
+        wireOptions(host, submit);
+        return;
+      }
+      if (orgs.length) {
+        orgs.forEach((o) => {
+          const ok = o.domains.length > 0;
+          rows.push(optionRow("org:" + o.id, o.name, ok, ok ? "Verified: " + o.domains.join(", ") : "No verified domain — verify one under Publishers first."));
+        });
+      } else {
+        rows.push('<p class="muted" style="margin:0.5rem 0 0;">No organization identities yet. <a href="/account/publishers">Create one</a> to publish under a brand.</p>');
+      }
+    }
+    host.innerHTML = rows.join("");
+    wireOptions(host, submit);
+  }
+
+  function wireOptions(host, submit) {
+    host.querySelectorAll('input[name="attribution"]').forEach((r) =>
+      r.addEventListener("change", () => { submit.disabled = false; }),
+    );
+  }
+
+  async function submitPublish(b, overlay) {
+    const sel = overlay.querySelector('input[name="attribution"]:checked');
+    if (!sel) return;
+    const msg = $("publish-msg");
+    setMsg(msg, "");
+    const submit = $("publish-submit");
+    submit.disabled = true;
+    // Personal → empty body; organization → { publisher_identity: <id> }.
+    let body;
+    if (sel.value !== "personal") {
+      body = jsonapiBody("benchmark", { publisher_identity: sel.value.slice(4) });
+    }
+    try {
+      await apiFetch("/api/v1/benchmarks/" + encodeURIComponent(b.id) + "/actions/publish", { method: "POST", body });
+      overlay.remove();
+      await loadBenchmarks();
+    } catch (err) {
+      setMsg(msg, err.message, "error");
+      submit.disabled = false;
+    }
   }
 
   async function doWithdraw(id) {
@@ -172,16 +338,31 @@
     } catch (err) { setMsg($("benchmarks-msg"), err.message, "error"); }
   }
 
+  // The benchmark's actor fields resolve to "you" for the signed-in user, "an API key" when a key
+  // created it (created_by is null), and "another member" otherwise (we don't expose other users' names).
+  function whoLabel(uid) {
+    if (!uid) return "an API key";
+    if (USER_ID && uid === USER_ID) return "you";
+    return "another member";
+  }
+
   // ── Manage panel: targets + runs ──
   function openManage(b) {
     if (!b) return;
     const a = b.attributes || {};
     const mp = $("manage-panel");
     mp.dataset.id = b.id;
+    let meta = "Created by " + whoLabel(a.created_by);
+    if (a.published_by) {
+      const pa = a.published_as;
+      const as = pa ? (pa.kind === "ORGANIZATION" ? " as " + (pa.name || "") : " personally") : "";
+      meta += " · Published by " + whoLabel(a.published_by) + as;
+    }
     mp.innerHTML =
       '<div class="panel">' +
       '<div class="sectionHead"><h2>Manage: ' + esc(a.name || a.key || "") + "</h2>" +
       '<button type="button" class="button buttonSecondary buttonSmall" id="manage-close">Close</button></div>' +
+      '<p class="muted manageMeta">' + esc(meta) + "</p>" +
       '<div class="manageBody">' +
       '<p class="miniLabel">Targets</p>' +
       '<div id="targets-host"></div>' +

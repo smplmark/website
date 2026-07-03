@@ -367,7 +367,10 @@
 .statusPill { display: inline-flex; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.02em; text-transform: uppercase; }
 .statusPill.is-published, .statusPill.is-active, .statusPill.is-live { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
 .statusPill.is-private, .statusPill.is-ended, .statusPill.is-expired { background: var(--surface-alt); color: var(--text-muted); }
-.statusPill.is-withdrawn, .statusPill.is-revoked, .statusPill.is-invalidated { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.statusPill.is-withdrawn, .statusPill.is-revoked, .statusPill.is-invalidated, .statusPill.is-lapsed { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.statusPill.is-verified { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.statusPill.is-draft, .statusPill.is-pending { background: var(--surface-alt); color: var(--text-muted); }
+.statusPill.is-ready { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
 
 /* Segmented control (tabs) */
 .segmented { display: inline-flex; gap: 0.25rem; padding: 0.25rem; border-radius: 10px; background: var(--surface-alt); border: 1px solid var(--border); }
@@ -496,6 +499,45 @@
 .passwordStrengthLabel.is-medium { color: var(--warning); }
 .passwordStrengthLabel.is-strong { color: var(--success); }
 .passwordRequirements { margin: 0; font-size: 0.83rem; color: var(--text-muted); }
+
+/* Action groups inside a section header (identity cards, domain rows) */
+.sectionHead .actions { display: inline-flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Benchmark manage-panel meta line + inline attribution label */
+.manageMeta { margin: 0 0 0.75rem; font-size: 0.85rem; }
+.attributionLabel { font-size: 0.8rem; }
+
+/* Publish attribution options (radio list in the publish modal) */
+.publishOption { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.7rem 0.8rem; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.5rem; cursor: pointer; }
+.publishOption:hover { border-color: var(--accent); }
+.publishOption input { margin-top: 0.2rem; }
+.publishOption.isDisabled { opacity: 0.6; cursor: not-allowed; }
+.publishOption.isDisabled:hover { border-color: var(--border); }
+.publishOptionBody { display: flex; flex-direction: column; gap: 0.15rem; }
+.publishOptionTitle { font-weight: 600; }
+.publishOptionDetail { font-size: 0.83rem; color: var(--text-muted); }
+
+/* Publisher identity cards */
+.identityCard { margin-bottom: 1.1rem; }
+.identityHead { display: flex; align-items: center; gap: 0.8rem; }
+.identityHead h2 { margin: 0; }
+.identityLogo { height: 34px; max-width: 130px; width: auto; border-radius: 6px; object-fit: contain; }
+.identityBody { margin-top: 1rem; }
+
+/* Domain verification TXT record */
+.domainRow { margin-bottom: 0.6rem; }
+.txtRecord { margin-top: 0.5rem; padding: 0.7rem 0.85rem; background: var(--surface); border: 1px dashed var(--border); border-radius: 8px; }
+.txtGrid { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 0.85rem; align-items: center; }
+.txtLabel { font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.txtGrid code { font-size: 0.85rem; word-break: break-all; }
+.txtValueWrap { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.txtValue { flex: 1; min-width: 0; }
+
+/* Settings toggle row */
+.switchRow { display: flex; align-items: center; gap: 0.6rem; }
+.switchRow input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.switchRow input[type="checkbox"]:disabled { cursor: not-allowed; }
+.switchState { font-size: 0.9rem; color: var(--text-muted); }
 
 /* ================================================================
    Responsive

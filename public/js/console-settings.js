@@ -26,6 +26,7 @@
     CAN_ADMIN = id.canAdmin;
     $("account-role").textContent = id.role || "—";
     render();
+    renderPersonalToggle();
     if (CAN_ADMIN) {
       $("edit-name").style.display = "";
     } else {
@@ -33,6 +34,41 @@
     }
   }).catch(() => {
     $("account-name").textContent = "Failed to load account.";
+  });
+
+  // ── Personal-publishing toggle ──
+  const personalToggle = $("allow-personal");
+  function renderPersonalToggle() {
+    const a = (ACCOUNT && ACCOUNT.attributes) || {};
+    const on = a.allow_personal_publish === true;
+    personalToggle.checked = on;
+    personalToggle.disabled = !CAN_ADMIN;
+    $("allow-personal-state").textContent = on ? "On" : "Off";
+  }
+
+  personalToggle.addEventListener("change", async () => {
+    if (!CAN_ADMIN) return;
+    const attrs = (ACCOUNT && ACCOUNT.attributes) || {};
+    const next = personalToggle.checked;
+    personalToggle.disabled = true;
+    setMsg($("personal-msg"), "");
+    try {
+      // Full-replace PUT (get-mutate-put): carry name/description/url, flip the flag.
+      const doc = await apiFetch("/api/v1/accounts/current", {
+        method: "PUT",
+        body: jsonapiBody("account", {
+          name: attrs.name,
+          description: attrs.description ?? null,
+          url: attrs.url ?? null,
+          allow_personal_publish: next,
+        }),
+      });
+      if (doc && doc.data) ACCOUNT = doc.data;
+      renderPersonalToggle();
+    } catch (err) {
+      setMsg($("personal-msg"), err.message, "error");
+      renderPersonalToggle(); // revert the checkbox to the server truth
+    }
   });
 
   function render() {
