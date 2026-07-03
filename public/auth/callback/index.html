@@ -10,15 +10,19 @@
   <link rel="stylesheet" href="/css/console.css" />
 </head>
 <body>
-  <main>
-    <div class="wrap">
-      <div class="auth-wrap">
-        <div class="auth-card" id="callback-root">
-          <h1>Signing you in…</h1>
-          <p class="sub">One moment while we complete your sign-in.</p>
-        </div>
+  <main class="authViewport">
+    <section class="authCard" id="callback-root">
+      <div class="authCardHeader">
+        <a class="authLogo" href="/" aria-label="smplmark home"><picture>
+          <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
+          <img src="/img/logo-dark.png" alt="smplmark" />
+        </picture></a>
       </div>
-    </div>
+      <div class="authCopy">
+        <h1>Signing you in…</h1>
+        <p>One moment while we complete your sign-in.</p>
+      </div>
+    </section>
   </main>
 
   <script src="/js/api.js"></script>
