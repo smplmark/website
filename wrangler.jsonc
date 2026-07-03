@@ -49,12 +49,13 @@
     }
   ],
 
-  // Cron: re-check TXT-verified publisher domains daily and lapse any whose record is gone (see
-  // src/index.ts scheduled() → src/publish/sweep.ts). A lapse blocks new publishes under the identity
-  // but never rewrites a published benchmark's frozen attribution snapshot.
-  "triggers": {
-    "crons": ["17 4 * * *"]
-  },
+  // Cron (DEFERRED): the daily re-check of TXT-verified publisher domains lives in
+  // src/index.ts scheduled() → src/publish/sweep.ts and is ready to wire up. Registering the trigger
+  // requires the deploy CLOUDFLARE_API_TOKEN to carry the Workers cron-schedule permission; today it
+  // does not, so `wrangler deploy` fails at POST .../schedules. Re-add the block below once the token
+  // is updated — everything else is in place:
+  //   "triggers": { "crons": ["17 4 * * *"] }
+  // Until then a domain that lapses in DNS is caught on the next manual publisher_domains verify.
 
   // Runtime secrets are NOT committed vars. Set them with `wrangler secret put <NAME>` in prod and
   // `.dev.vars` locally (tests supply their own via vitest.config.ts). Required for full function:
