@@ -87,13 +87,59 @@ function cardSource(a) {
   );
 }
 
+// Sort menu: newest (the server default) plus reddit-style popularity windows.
+var SORT_OPTIONS = [
+  { value: "", label: "Newest" },
+  { value: "views_today", label: "Popular today" },
+  { value: "views_week", label: "Popular this week" },
+  { value: "views_month", label: "Popular this month" },
+  { value: "views_year", label: "Popular this year" },
+  { value: "views", label: "Popular all time" },
+];
+
 function currentFilters() {
   const params = new URLSearchParams(location.search);
   const category = (params.get("category") || "").toUpperCase();
+  const sort = (params.get("sort") || "").toLowerCase();
   return {
     category: CATEGORY_LABELS[category] ? category : "",
     tag: (params.get("tag") || "").trim().toLowerCase(),
+    q: (params.get("q") || "").trim(),
+    sort: SORT_OPTIONS.some((o) => o.value === sort) ? sort : "",
   };
+}
+
+// The big search box. Rendered once (never re-rendered on load — that would steal focus while
+// typing). On /benchmarks it filters live (debounced); on the home page it sends you to
+// /benchmarks?q=… like any search engine box.
+function setupSearchBox(filters, filterable) {
+  const box = document.getElementById("benchmark-search");
+  if (!box || document.getElementById("benchmark-search-input")) return;
+  box.innerHTML =
+    '<input type="search" id="benchmark-search-input" class="big-search" ' +
+    'placeholder="Search benchmarks — try gpu rendering or &quot;llama 3&quot;" ' +
+    'value="' + esc(filters.q) + '" autocomplete="off" />';
+  const input = document.getElementById("benchmark-search-input");
+  if (filterable) {
+    let timer = null;
+    const apply = () => applyFilters({ ...currentFilters(), q: input.value.trim() });
+    input.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(apply, 350);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        clearTimeout(timer);
+        apply();
+      }
+    });
+  } else {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && input.value.trim()) {
+        location.href = withApi("/benchmarks?q=" + encodeURIComponent(input.value.trim()));
+      }
+    });
+  }
 }
 
 function renderFilterBar(filters) {
@@ -106,27 +152,42 @@ function renderFilterBar(filters) {
         esc(CATEGORY_LABELS[key]) + "</option>",
     );
   }
+  const sortOptions = SORT_OPTIONS.map(
+    (o) =>
+      '<option value="' + o.value + '"' + (filters.sort === o.value ? " selected" : "") + ">" +
+      esc(o.label) + "</option>",
+  );
   box.innerHTML =
     '<div class="field"><label for="category-filter">Category</label>' +
     '<select id="category-filter">' + options.join("") + "</select></div>" +
+    '<div class="field"><label for="sort-filter">Sort</label>' +
+    '<select id="sort-filter">' + sortOptions.join("") + "</select></div>" +
     (filters.tag
       ? '<span class="active-tag">tag: <strong>' + esc(filters.tag) +
         '</strong> <button id="clear-tag" class="clear-tag" title="Clear tag filter" aria-label="Clear tag filter">×</button></span>'
       : "");
 
   document.getElementById("category-filter").addEventListener("change", (e) => {
-    applyFilters({ category: e.target.value, tag: filters.tag });
+    applyFilters({ ...filters, category: e.target.value });
+  });
+  document.getElementById("sort-filter").addEventListener("change", (e) => {
+    applyFilters({ ...filters, sort: e.target.value });
   });
   const clear = document.getElementById("clear-tag");
-  if (clear) clear.addEventListener("click", () => applyFilters({ category: filters.category, tag: "" }));
+  if (clear) clear.addEventListener("click", () => applyFilters({ ...filters, tag: "" }));
 }
 
 function applyFilters(filters) {
   const params = new URLSearchParams(location.search);
-  if (filters.category) params.set("category", filters.category);
-  else params.delete("category");
-  if (filters.tag) params.set("tag", filters.tag);
-  else params.delete("tag");
+  for (const [key, value] of [
+    ["category", filters.category],
+    ["tag", filters.tag],
+    ["q", filters.q],
+    ["sort", filters.sort],
+  ]) {
+    if (value) params.set(key, value);
+    else params.delete(key);
+  }
   const qs = params.toString();
   history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
   load();
@@ -136,15 +197,21 @@ async function load() {
   const grid = document.getElementById("benchmark-grid");
   const status = document.getElementById("status");
   if (!grid) return;
-  // Filters apply only on the page that renders the filter bar (the /benchmarks list).
+  // Filters apply only on the page that renders the filter bar (the /benchmarks list); the home
+  // page still gets the search box (it redirects to /benchmarks).
   const filterable = !!document.getElementById("benchmark-filters");
-  const filters = filterable ? currentFilters() : { category: "", tag: "" };
+  const filters = filterable
+    ? currentFilters()
+    : { category: "", tag: "", q: "", sort: "" };
+  setupSearchBox(filters, filterable);
   if (filterable) renderFilterBar(filters);
 
   let url = apiBase() + "/api/v1/benchmarks";
   const qs = new URLSearchParams();
   if (filters.category) qs.set("filter[category]", filters.category);
   if (filters.tag) qs.set("filter[tag]", filters.tag);
+  if (filters.q) qs.set("filter[search]", filters.q);
+  if (filters.sort) qs.set("sort", "-" + filters.sort);
   if ([...qs].length) url += "?" + qs.toString();
 
   if (status) {
@@ -160,9 +227,11 @@ async function load() {
       grid.innerHTML = "";
       if (status) {
         status.textContent =
-          filters.category || filters.tag
-            ? "No published benchmarks match this filter."
-            : "No published benchmarks yet.";
+          filters.q
+            ? "No benchmarks match \u201C" + filters.q + "\u201D."
+            : filters.category || filters.tag
+              ? "No published benchmarks match this filter."
+              : "No published benchmarks yet.";
       }
       return;
     }
@@ -179,7 +248,11 @@ async function load() {
             <p>${esc(a.description || "")}</p>
             ${cardChips(a)}
             ${cardSource(a)}
-            <div class="meta">${esc(metricNames(a.sample_schema))}</div>
+            <div class="meta">${esc(metricNames(a.sample_schema))}${
+              typeof a.views === "number" && a.views > 0
+                ? " · " + a.views.toLocaleString() + (a.views === 1 ? " view" : " views")
+                : ""
+            }</div>
           </a>`;
       })
       .join("");

@@ -295,3 +295,13 @@ footer.site a:hover { color: var(--text); }
   font-size: 13px; cursor: pointer;
 }
 .more-bars:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── The big search box ── */
+.search-wrap { margin: 6px 0 18px; }
+.big-search {
+  width: 100%; max-width: 680px; display: block;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text); font: inherit; font-size: 16px; padding: 13px 22px;
+}
+.big-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.big-search::placeholder { color: var(--muted); }

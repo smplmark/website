@@ -220,6 +220,11 @@ async function init() {
   const a = benchmark.attributes;
   document.title = a.name + " — smplmark";
 
+  // Popularity beacon: fire-and-forget, once per page load. Failure is invisible by design.
+  fetch(API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/actions/view", {
+    method: "POST",
+  }).catch(() => {});
+
   try {
     publisher = (await fetchJson(API + "/api/v1/accounts/" + encodeURIComponent(a.account))).data;
   } catch (_) {
