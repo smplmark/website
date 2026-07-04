@@ -4,16 +4,30 @@
 //
 // Responsibilities:
 //   1. Redirect the apex (smplmark.org) to the canonical www host.
-//   2. Serve the data-driven benchmark shell for every /benchmarks/{key}.
-//   3. Fall through to static assets (marketing pages, viewer JS/CSS, images) for everything else.
+//   2. Redirect app pages (/login, /signup, /account, …) and /api/* to the app host — the console +
+//      auth + API live there now (the `app` repo). Marketing links to /login etc. resolve this way.
+//   3. Serve the data-driven benchmark shell for every /benchmarks/{key}.
+//   4. Fall through to static assets (marketing pages, viewer JS/CSS, images) for everything else.
 
 const APEX_HOST = "smplmark.org";
 const WWW_HOST = "www.smplmark.org";
+const APP_HOST = "app.smplmark.org";
 
 /** /benchmarks/{key} — a single path segment after /benchmarks (not /benchmarks itself, which is the
  *  static index listing). */
 function isBenchmarkDetail(pathname: string): boolean {
   return /^\/benchmarks\/[^/]+\/?$/.test(pathname);
+}
+
+/** Paths whose canonical home is the app host (console + auth). */
+function isAppPage(p: string): boolean {
+  const roots = ["/login", "/signup", "/account", "/auth", "/verify-email", "/accept-invitation"];
+  if (p === "/api-reference") return true;
+  return roots.some((r) => p === r || p.startsWith(`${r}/`));
+}
+
+function isApiPath(p: string): boolean {
+  return p === "/api" || p.startsWith("/api/");
 }
 
 export default {
@@ -24,6 +38,19 @@ export default {
     if (url.hostname === APEX_HOST) {
       url.protocol = "https:";
       url.hostname = WWW_HOST;
+      return Response.redirect(url.toString(), 301);
+    }
+
+    // App pages + API live on the app host. Redirect there so marketing "Sign in" links (and any
+    // stray console/API URL or old bookmark) resolve. /api/* uses 308 to preserve method + body.
+    if (isApiPath(url.pathname)) {
+      url.protocol = "https:";
+      url.hostname = APP_HOST;
+      return Response.redirect(url.toString(), 308);
+    }
+    if (isAppPage(url.pathname)) {
+      url.protocol = "https:";
+      url.hostname = APP_HOST;
       return Response.redirect(url.toString(), 301);
     }
 

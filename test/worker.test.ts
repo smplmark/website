@@ -34,4 +34,18 @@ describe("website worker", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("smplmark");
   });
+
+  it("redirects app pages (login/signup) to the app host (301)", async () => {
+    for (const p of ["/login", "/signup", "/account"]) {
+      const res = await noFollow(`https://www.smplmark.org${p}`);
+      expect(res.status).toBe(301);
+      expect(res.headers.get("location")).toBe(`https://app.smplmark.org${p}`);
+    }
+  });
+
+  it("redirects the API to the app host (308, method-preserving)", async () => {
+    const res = await noFollow("https://www.smplmark.org/api/v1/benchmarks");
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("https://app.smplmark.org/api/v1/benchmarks");
+  });
 });
