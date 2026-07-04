@@ -744,19 +744,30 @@ function setupChartControls() {
   if (chartMode !== "TIME" && el("range-field")) el("range-field").hidden = true;
 
   // CATEGORY benchmarks get a visualization picker (ranked bars, or a sortable table of every
-  // metric per target).
+  // metric per target) — a two-option segmented control, radio semantics.
   if (chartMode === "CATEGORY") {
     const field = document.createElement("div");
     field.className = "field";
     field.innerHTML =
-      '<label for="view-mode">View</label>' +
-      '<select id="view-mode"><option value="bars">Bars</option><option value="table">Table</option></select>';
+      "<label>View</label>" +
+      '<div class="segmented" role="radiogroup" aria-label="View">' +
+      '<button type="button" class="seg-option active" data-view="bars" role="radio" aria-checked="true">Bars</button>' +
+      '<button type="button" class="seg-option" data-view="table" role="radio" aria-checked="false">Table</button>' +
+      "</div>";
     const metricField = el("metric-field");
     metricField.parentElement.insertBefore(field, metricField);
-    field.querySelector("#view-mode").addEventListener("change", (e) => {
-      chartView = e.target.value;
-      tableSort = { key: null, desc: true };
-      drawChart();
+    field.querySelectorAll(".seg-option").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (btn.dataset.view === chartView) return;
+        chartView = btn.dataset.view;
+        field.querySelectorAll(".seg-option").forEach((b) => {
+          const on = b === btn;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-checked", String(on));
+        });
+        tableSort = { key: null, desc: true };
+        drawChart();
+      });
     });
   }
 
