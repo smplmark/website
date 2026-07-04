@@ -282,3 +282,16 @@ footer.site { border-top: 1px solid var(--border); color: var(--muted); font-siz
 footer.site .wrap { padding: 22px 20px; display: flex; gap: 16px; align-items: center; }
 footer.site a { color: var(--muted); }
 footer.site a:hover { color: var(--text); }
+
+/* ── High-cardinality chart controls ── */
+.field input.target-search {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 14px; padding: 8px 10px; margin-bottom: 6px;
+}
+.field input.target-search:focus { outline: none; border-color: var(--accent); }
+.more-bars {
+  display: block; margin: 12px auto 0; background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 999px; padding: 8px 18px; font: inherit;
+  font-size: 13px; cursor: pointer;
+}
+.more-bars:hover { border-color: var(--accent); color: var(--accent); }

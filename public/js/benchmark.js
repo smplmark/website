@@ -153,6 +153,21 @@ async function fetchJson(url) {
   return res.json();
 }
 
+// Never assume a collection fits one page: walk page[number] until a short page, bounded by a
+// hard client ceiling so a huge benchmark can't wedge the tab. Callers surface `truncated`.
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 5; // ceiling: 5,000 rows per collection
+async function fetchAllPages(url) {
+  const data = [];
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const sep = url.includes("?") ? "&" : "?";
+    const doc = await fetchJson(url + sep + "page[number]=" + page + "&page[size]=" + PAGE_SIZE);
+    data.push(...doc.data);
+    if (doc.data.length < PAGE_SIZE) return { data: data, truncated: false };
+  }
+  return { data: data, truncated: true };
+}
+
 function paragraphs(text) {
   if (!text) return '<p class="muted">Not provided.</p>';
   return String(text)
@@ -169,7 +184,9 @@ function fmtDate(iso) {
 let benchmark = null;
 let publisher = null;
 let targets = [];
-let runs = []; // flattened across targets; each carries attributes incl target + live + invalidated
+let targetsTruncated = false;
+let runs = []; // benchmark-wide; each carries attributes incl target + live + invalidated
+let runsTruncated = false;
 let metricList = [];
 let chartDecl = null;
 let chartMode = "TIME";
@@ -202,18 +219,20 @@ async function init() {
     publisher = null;
   }
   try {
-    targets = (await fetchJson(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id))).data;
+    const res = await fetchAllPages(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+    targets = res.data;
+    targetsTruncated = res.truncated;
   } catch (_) {
     targets = [];
   }
-  // Runs (for live + invalidation surfacing). Best-effort per target.
+  // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing and
+  // the run→target mapping the chart grouping needs. Best-effort.
   runs = [];
-  for (const t of targets) {
-    try {
-      const rs = (await fetchJson(API + "/api/v1/runs?filter[target]=" + encodeURIComponent(t.id))).data;
-      for (const r of rs) runs.push({ ...r, targetId: t.id });
-    } catch (_) {}
-  }
+  try {
+    const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+    runs = res.data.map((r) => ({ ...r, targetId: r.attributes.target }));
+    runsTruncated = res.truncated;
+  } catch (_) {}
 
   const schema = a.sample_schema || { metrics: [], derived: [] };
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
@@ -291,6 +310,12 @@ function renderBanners() {
   const live = runs.filter((r) => r.attributes.live);
   if (live.length) {
     html += '<div class="banner live"><span class="dot"></span>' + live.length + " live run" + (live.length > 1 ? "s" : "") + " — still recording.</div>";
+  }
+  if (targetsTruncated || runsTruncated) {
+    html +=
+      '<div class="banner"><strong>Large benchmark:</strong> showing the first ' +
+      (targetsTruncated ? targets.length + " targets" : runs.length + " runs") +
+      ". Narrow the view with the target picker on the Data tab.</div>";
   }
   box.innerHTML = html;
 }
@@ -384,15 +409,31 @@ function currentRange() {
   return "[" + new Date(now - secs * 1000).toISOString() + "," + new Date(now).toISOString() + ")";
 }
 
-function observationsUrl(targetId, range) {
-  let url = API + "/api/v1/observations?filter[target]=" + encodeURIComponent(targetId) + "&page[size]=1000";
+function observationsUrl(scopeParam, scopeId, range) {
+  let url = API + "/api/v1/observations?filter[" + scopeParam + "]=" + encodeURIComponent(scopeId);
   if (range) url += "&filter[created_at]=" + encodeURIComponent(range);
   return url;
 }
-async function fetchObservations(targetId, range) {
-  const res = await fetch(observationsUrl(targetId, range), { headers: { Accept: "application/vnd.api+json" } });
-  if (!res.ok) throw new Error(await errorDetail(res));
-  return (await res.json()).data;
+
+// One benchmark-wide observations fetch per range (cached), grouped per target via the runs map —
+// instead of one request per target.
+const observationCache = new Map(); // range key → { byTarget: Map<targetId, obs[]>, truncated }
+async function observationsByTarget(range) {
+  const cacheKey = range || "all";
+  if (observationCache.has(cacheKey)) return observationCache.get(cacheKey);
+  const targetByRun = new Map(runs.map((r) => [r.id, r.targetId]));
+  const res = await fetchAllPages(observationsUrl("benchmark", benchmark.id, range));
+  const byTarget = new Map();
+  for (const s of res.data) {
+    const targetId = targetByRun.get(s.attributes.run);
+    if (targetId === undefined) continue; // run beyond the runs page ceiling
+    let list = byTarget.get(targetId);
+    if (!list) { list = []; byTarget.set(targetId, list); }
+    list.push(s);
+  }
+  const entry = { byTarget: byTarget, truncated: res.truncated };
+  observationCache.set(cacheKey, entry);
+  return entry;
 }
 
 const AXIS = { stroke: "#9aa7b4", grid: { stroke: "#2a3140", width: 1 }, ticks: { stroke: "#2a3140", width: 1 } };
@@ -467,58 +508,90 @@ function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
   chart = new uPlot(opts, data, el("chart"));
 }
 
+const MAX_BARS = 50;
+let barsShown = MAX_BARS;
+
 function renderBars(seriesTargets, perTargetPoints, yKey) {
-  // CATEGORY: reduce each target's observations to a single value (mean of y).
+  // CATEGORY: reduce each target's observations to a single value (mean of y), ranked best-first;
+  // high-cardinality benchmarks render the top slice with a "show more" expander.
   destroyChart();
   const rows = seriesTargets.map((t, i) => {
     const pts = perTargetPoints[i];
     const mean = pts.length ? pts.reduce((s, p) => s + p.y, 0) / pts.length : null;
     return { name: t.attributes.name, value: mean };
   });
+  rows.sort((a, z) => (z.value == null ? -Infinity : z.value) - (a.value == null ? -Infinity : a.value));
   const max = Math.max(1, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))));
   if (!rows.some((r) => r.value != null)) { el("empty").hidden = false; return; }
   el("empty").hidden = true;
   const unit = metricUnit(yKey);
+  const shown = rows.slice(0, barsShown);
+  const remaining = rows.length - shown.length;
   el("chart").innerHTML =
     '<div class="bars">' +
-    rows
+    shown
       .map((r, i) => {
         const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
         const val = r.value == null ? "—" : r.value.toFixed(1) + (unit ? " " + unit : "");
         return (
-          '<div class="bar-row"><div class="bar-label">' + esc(r.name) + "</div>" +
+          '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
           '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
           '<div class="bar-value">' + esc(val) + "</div></div>"
         );
       })
       .join("") +
-    "</div>";
+    "</div>" +
+    (remaining > 0
+      ? '<button type="button" id="more-bars" class="more-bars">Show ' +
+        Math.min(MAX_BARS, remaining) + " more of " + rows.length + " targets</button>"
+      : "");
+  const more = el("more-bars");
+  if (more) {
+    more.addEventListener("click", () => {
+      barsShown += MAX_BARS;
+      renderBars(seriesTargets, perTargetPoints, yKey);
+    });
+  }
 }
+
+// Line charts cap the series count — hundreds of overlaid lines are unreadable and slow.
+const MAX_SERIES = 12;
 
 async function drawChart() {
   chartDrawn = true;
+  barsShown = MAX_BARS; // a redraw (metric/target/range change) resets the bar expander
   const yKey = currentY();
   const selected = el("target").value;
   const range = chartMode === "TIME" ? currentRange() : null;
-  el("json").href = observationsUrl(selected || (targets[0] && targets[0].id) || "", range);
+  el("json").href = selected
+    ? observationsUrl("target", selected, range)
+    : observationsUrl("benchmark", benchmark.id, range);
 
   if (!yKey) {
     el("chart-status").textContent = "This benchmark has no numeric metric to plot.";
     return;
   }
-  const seriesTargets = selected ? targets.filter((t) => t.id === selected) : targets;
+  let seriesTargets = selected ? targets.filter((t) => t.id === selected) : targets;
   if (!seriesTargets.length) { el("chart-status").textContent = "No targets to plot."; return; }
   el("chart-status").className = "status";
   el("chart-status").textContent = "Loading…";
   try {
-    const raw = await Promise.all(seriesTargets.map((t) => fetchObservations(t.id, range)));
+    const { byTarget, truncated } = await observationsByTarget(range);
+    let seriesNote = "";
+    if (chartMode !== "CATEGORY" && !selected && seriesTargets.length > MAX_SERIES) {
+      seriesTargets = seriesTargets.slice(0, MAX_SERIES);
+      seriesNote = " · first " + MAX_SERIES + " targets plotted — pick a target to focus";
+    }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
-    const perTargetPoints = raw.map((list) => pointsFor(list, yKey, xKey));
+    const perTargetPoints = seriesTargets.map((t) => pointsFor(byTarget.get(t.id) || [], yKey, xKey));
     if (chartMode === "CATEGORY") renderBars(seriesTargets, perTargetPoints, yKey);
     else renderXY(seriesTargets, perTargetPoints, yKey, chartMode === "TIME");
     const total = perTargetPoints.reduce((n, pts) => n + pts.length, 0);
     el("chart-status").textContent =
-      total + " observations · " + seriesTargets.length + " target(s) · metric “" + yKey + "” · " + chartMode.toLowerCase() + " chart.";
+      total + " observations · " + seriesTargets.length + " target(s) · metric “" + yKey + "” · " +
+      chartMode.toLowerCase() + " chart" +
+      (truncated ? " · large dataset — first " + MAX_PAGES * PAGE_SIZE + " observations loaded" : "") +
+      seriesNote + ".";
   } catch (err) {
     destroyChart();
     el("chart-status").className = "status error";
@@ -532,7 +605,7 @@ async function downloadCsv() {
   const tid = selected || (targets[0] && targets[0].id);
   if (!tid) return;
   try {
-    const res = await fetch(observationsUrl(tid, range), { headers: { Accept: "text/csv" } });
+    const res = await fetch(observationsUrl("target", tid, range), { headers: { Accept: "text/csv" } });
     if (!res.ok) throw new Error(await errorDetail(res));
     const blob = await res.blob();
     const a = document.createElement("a");
@@ -546,17 +619,42 @@ async function downloadCsv() {
   }
 }
 
-function setupChartControls() {
+const MAX_PICKER_OPTIONS = 500;
+
+function fillTargetOptions(filterText) {
   const targetSel = el("target");
+  const previous = targetSel.value;
+  targetSel.innerHTML = "";
   const optAll = document.createElement("option");
   optAll.value = "";
-  optAll.textContent = "All targets";
+  optAll.textContent = filterText ? "All matching targets" : "All targets";
   targetSel.appendChild(optAll);
+  const needle = (filterText || "").toLowerCase();
+  let shown = 0;
   for (const t of targets) {
+    if (needle && !t.attributes.name.toLowerCase().includes(needle)) continue;
+    if (shown >= MAX_PICKER_OPTIONS) break;
     const o = document.createElement("option");
     o.value = t.id;
     o.textContent = t.attributes.name;
+    if (t.id === previous) o.selected = true;
     targetSel.appendChild(o);
+    shown++;
+  }
+}
+
+function setupChartControls() {
+  const targetSel = el("target");
+  fillTargetOptions("");
+  // A plain dropdown stops working at hundreds of entries — add a text filter above it.
+  if (targets.length > 100) {
+    const input = document.createElement("input");
+    input.type = "search";
+    input.id = "target-search";
+    input.className = "target-search";
+    input.placeholder = "Filter " + targets.length + " targets…";
+    targetSel.parentElement.insertBefore(input, targetSel);
+    input.addEventListener("input", () => fillTargetOptions(input.value));
   }
 
   if (metricList.length > 1) {
