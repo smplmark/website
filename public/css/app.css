@@ -64,7 +64,7 @@ header.site .wrap {
 }
 .brand { display: inline-flex; align-items: center; }
 .brand img { height: 22px; width: auto; display: block; }
-header.site nav { display: flex; gap: 20px; margin-left: auto; }
+header.site nav { display: flex; align-items: center; gap: 20px; margin-left: auto; }
 header.site nav a { color: var(--muted); font-size: 14px; }
 header.site nav a:hover { color: var(--text); }
 header.site nav a.active { color: var(--accent); font-weight: 600; }
@@ -362,3 +362,6 @@ header.site nav a.nav-cta {
   padding: 5px 14px; border-radius: 999px;
 }
 header.site nav a.nav-cta:hover { color: #fff; filter: brightness(1.12); }
+
+/* Footer brand: proper copyright line, TM as a true superscript. */
+footer.site .footer-brand sup { font-size: 0.62em; line-height: 0; }
