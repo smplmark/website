@@ -1,0 +1,3 @@
+# Local-loop only (wrangler dev loads this file; production never sees it): app-host redirects
+# (/login, /api-reference, /api/*) target the local app Worker instead of app.smplmark.org.
+DEV_APP_ORIGIN=http://localhost:8788

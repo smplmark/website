@@ -275,7 +275,8 @@ function renderHead() {
   const a = benchmark.attributes;
   el("bm-name").innerHTML =
     esc(a.name) +
-    (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "");
+    (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "") +
+    (a.closed ? ' <span class="pill complete" title="The publisher has marked this benchmark complete — nothing new will be added.">complete</span>' : "");
   el("bm-tagline").textContent = a.description || "";
   const chipsBox = el("bm-chips");
   if (chipsBox) chipsBox.innerHTML = chipsMarkup(a);

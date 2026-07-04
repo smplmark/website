@@ -49,15 +49,22 @@ export default {
 
     // App pages + API live on the app host. Redirect there so marketing "Sign in" links (and any
     // stray console/API URL or old bookmark) resolve. /api/* uses 308 to preserve method + body.
+    // In the local loop the app host is the local app Worker: DEV_APP_ORIGIN comes from .dev.vars,
+    // which wrangler loads only for `wrangler dev` — it does not exist in production. (Hostname
+    // sniffing can't work here: wrangler dev presents requests as the configured custom domain.)
+    const toAppHost = (u: URL) =>
+      env.DEV_APP_ORIGIN
+        ? new URL(u.pathname + u.search, env.DEV_APP_ORIGIN).toString()
+        : (() => {
+            u.protocol = "https:";
+            u.hostname = APP_HOST;
+            return u.toString();
+          })();
     if (isApiPath(url.pathname)) {
-      url.protocol = "https:";
-      url.hostname = APP_HOST;
-      return Response.redirect(url.toString(), 308);
+      return Response.redirect(toAppHost(url), 308);
     }
     if (isAppPage(url.pathname)) {
-      url.protocol = "https:";
-      url.hostname = APP_HOST;
-      return Response.redirect(url.toString(), 301);
+      return Response.redirect(toAppHost(url), 301);
     }
 
     // Data-driven benchmark page: every /benchmarks/{key} serves the same shell, which then loads the

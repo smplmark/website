@@ -6,6 +6,13 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 export default defineConfig({
   plugins: [
     cloudflareTest({
+      miniflare: {
+        bindings: {
+          // vitest auto-loads .dev.vars; blank it so tests exercise the PRODUCTION app-host
+          // redirects (the DEV_APP_ORIGIN dev-loop behavior is exercised via wrangler dev).
+          DEV_APP_ORIGIN: "",
+        },
+      },
       wrangler: { configPath: "./wrangler.jsonc" },
     }),
   ],

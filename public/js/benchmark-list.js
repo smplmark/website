@@ -287,8 +287,11 @@ async function load() {
     grid.innerHTML = doc.data
       .map((b) => {
         const a = b.attributes;
-        // Everything a visitor can see is published by definition — only WITHDRAWN warrants a pill.
-        const pill = a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "";
+        // Everything a visitor can see is published by definition — only WITHDRAWN warrants a
+        // pill; "complete" marks a closed (finished) dataset.
+        const pill =
+          (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "") +
+          (a.closed ? ' <span class="pill complete">complete</span>' : "");
         return `
           <a class="card" href="${esc(withApi("/benchmarks/" + encodeURIComponent(a.key)))}">
             <h3>${esc(a.name)}${pill}</h3>

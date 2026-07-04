@@ -351,3 +351,6 @@ footer.site a:hover { color: var(--text); }
 .data-table th.sortable:hover { color: var(--accent); }
 .data-table td { font-family: var(--mono); color: var(--text); }
 .data-table td:first-child { font-family: var(--sans); }
+
+/* "complete" — the publisher's closed/finished signal. */
+.pill.complete { color: var(--muted); border-style: dashed; }

@@ -51,6 +51,7 @@ npm run dev                           # wrangler dev — http://localhost:8788
 
 # Terminal 2 — this site on :8787
 npm install
+cp .dev.vars.example .dev.vars        # once: dev-only vars (points app-host redirects at :8788)
 npm run dev                           # wrangler dev — http://localhost:8787 (marketing + viewer)
 ```
 
