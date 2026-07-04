@@ -365,3 +365,7 @@ header.site nav a.nav-cta:hover { color: #fff; filter: brightness(1.12); }
 
 /* Footer brand: proper copyright line, TM as a true superscript. */
 footer.site .footer-brand sup { font-size: 0.62em; line-height: 0; }
+
+/* Footer GitHub link: octicon + label. */
+footer.site a.gh { display: inline-flex; align-items: center; gap: 5px; }
+footer.site a.gh svg { display: block; }
