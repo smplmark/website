@@ -43,6 +43,12 @@ describe("website worker", () => {
     }
   });
 
+  it("serves the sources page", async () => {
+    const res = await SELF.fetch("https://www.smplmark.org/sources");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("Where smplmark's ingested benchmarks come from");
+  });
+
   it("redirects the API to the app host (308, method-preserving)", async () => {
     const res = await noFollow("https://www.smplmark.org/api/v1/benchmarks");
     expect(res.status).toBe(308);
