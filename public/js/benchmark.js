@@ -197,6 +197,9 @@ let chartMode = "TIME";
 let chart = null;
 let chartDrawn = false;
 let chartView = "bars"; // CATEGORY visualization: "bars" | "table"
+let selectedTargetIds = null; // Set of target ids, or null ⇒ all targets
+let metricSelection = []; // checked metric names, in schema order
+let railFilter = "";
 
 async function init() {
   const crumb = el("crumb-back");
@@ -280,20 +283,24 @@ function renderHead() {
   el("bm-tagline").textContent = a.description || "";
   const chipsBox = el("bm-chips");
   if (chipsBox) chipsBox.innerHTML = chipsMarkup(a);
-  // Byline comes from the frozen published_as snapshot, never a live account lookup.
+  // Byline: the publisher at a glance — name + verification tier, straight from the frozen
+  // published_as snapshot. Clicking it opens the Publisher tab (plain #publisher hash link).
   const pa = a.published_as;
-  if (pa && pa.kind === "INGESTED") {
-    el("bm-byline").innerHTML = "Source: " + attributionMarkup(pa, "#publisher");
-  } else if (pa) {
-    el("bm-byline").innerHTML = "Published by " + attributionMarkup(pa, "#publisher");
+  if (pa) {
+    el("bm-byline").innerHTML = attributionMarkup(pa, "#publisher") + " " + verifiedPill(pa);
+    wireBadgeImages(el("bm-byline"));
   } else {
     el("bm-byline").textContent = "";
   }
-  if (pa) {
-    const link = el("byline-link");
-    if (link) link.addEventListener("click", (e) => { e.preventDefault(); activateTab("publisher"); });
-    wireBadgeImages(el("bm-byline"));
-  }
+}
+
+/** ORGANIZATION (domain-proven) and INGESTED (pulled directly from the source) are Verified. */
+function verifiedPill(pa) {
+  const verified = pa.kind === "ORGANIZATION" || pa.kind === "INGESTED";
+  return (
+    '<span class="publisher-kind' + (verified ? " verified" : "") + '">' +
+    (verified ? checkIcon() + "Verified" : "Unverified") + "</span>"
+  );
 }
 
 function renderBanners() {
@@ -366,14 +373,16 @@ function renderPublisher() {
   let html = "";
   if (pa && pa.kind === "INGESTED") {
     // Who published the data (the source), that they're verified (we pulled it from them
-    // directly), and freshness. License + attribution details live at /about#attribution.
+    // directly), the URL it came from — visible at a glance — and freshness. License details
+    // live on /sources.
     const src = safeHttpUrl(pa.source_url);
-    const nameEl = src
-      ? '<a class="attribution-name" href="' + esc(src) + '" target="_blank" rel="noopener">' + esc(pa.source_name || src) + "</a>"
-      : '<span class="attribution-name">' + esc(pa.source_name || "") + "</span>";
     html +=
-      '<div class="publisher-badge"><span class="attribution"><span class="who">' + nameEl + "</span></span>" +
+      '<div class="publisher-badge"><span class="attribution"><span class="who">' +
+      '<span class="attribution-name">' + esc(pa.source_name || "") + "</span></span></span>" +
       '<span class="publisher-kind verified">' + checkIcon() + "Verified</span></div>";
+    if (src) {
+      html += '<a class="site" href="' + esc(src) + '" target="_blank" rel="noopener">' + esc(src) + "</a>";
+    }
     if (pa.retrieved_at) {
       html += '<p class="since">Last refreshed ' + esc(fmtDate(pa.retrieved_at)) + ".</p>";
     }
@@ -407,14 +416,23 @@ function renderPublisher() {
   wireBadgeImages(box);
 }
 
-// ── Tabs ──
-function activateTab(name) {
+// ── Tabs — hash-routed (#overview/#data/#methodology/#publisher) so refresh restores the tab
+// and the back button walks tab history. ──
+const TAB_NAMES = ["overview", "data", "methodology", "publisher"];
+function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
   if (name === "data" && !chartDrawn) drawChart();
+  if (updateHash && location.hash !== "#" + name) location.hash = name;
 }
 function setupTabs() {
   for (const t of document.querySelectorAll(".tab")) t.addEventListener("click", () => activateTab(t.dataset.tab));
+  window.addEventListener("hashchange", () => {
+    const name = location.hash.slice(1);
+    if (TAB_NAMES.includes(name)) activateTab(name, false);
+  });
+  const initial = location.hash.slice(1);
+  if (TAB_NAMES.includes(initial) && initial !== "overview") activateTab(initial, false);
   window.addEventListener("resize", () => {
     if (chart) chart.setSize({ width: el("chart").clientWidth || 900, height: 420 });
   });
@@ -422,8 +440,11 @@ function setupTabs() {
 
 // ── Chart ──
 function currentY() {
-  const sel = el("metric");
-  if (sel && sel.value) return sel.value;
+  // The primary metric: the chart's declared default when it's checked, else the first checked.
+  if (metricSelection.length > 0) {
+    if (chartDecl && metricSelection.includes(chartDecl.y)) return chartDecl.y;
+    return metricSelection[0];
+  }
   return chartDecl ? chartDecl.y : metricList.length ? metricList[0].name : null;
 }
 function currentRange() {
@@ -573,7 +594,7 @@ function fmtCell(v) {
 
 function renderTable(seriesTargets, byTarget) {
   destroyChart();
-  const metricNames = metricList.map((m) => m.name);
+  const metricNames = metricSelection.length ? metricSelection : metricList.map((m) => m.name);
   const rows = seriesTargets.map((t) => {
     const obs = byTarget.get(t.id) || [];
     const cells = {};
@@ -628,22 +649,26 @@ const MAX_SERIES = 12;
 async function drawChart() {
   chartDrawn = true;
   const yKey = currentY();
-  const selected = el("target").value;
   const range = chartMode === "TIME" ? currentRange() : null;
   if (!yKey) {
     el("chart-status").textContent = "This benchmark has no numeric metric to plot.";
     return;
   }
-  let seriesTargets = selected ? targets.filter((t) => t.id === selected) : targets;
-  if (!seriesTargets.length) { el("chart-status").textContent = "No targets to plot."; return; }
+  let seriesTargets = activeTargets();
+  if (!seriesTargets.length) {
+    destroyChart();
+    el("chart").innerHTML = "";
+    el("chart-status").textContent = "No targets selected.";
+    return;
+  }
   el("chart-status").className = "status";
   el("chart-status").textContent = "Loading…";
   try {
     const { byTarget, truncated } = await observationsByTarget(range);
     let seriesNote = "";
-    if (chartMode !== "CATEGORY" && !selected && seriesTargets.length > MAX_SERIES) {
+    if (chartMode !== "CATEGORY" && seriesTargets.length > MAX_SERIES) {
       seriesTargets = seriesTargets.slice(0, MAX_SERIES);
-      seriesNote = " · first " + MAX_SERIES + " targets plotted — pick a target to focus";
+      seriesNote = " · first " + MAX_SERIES + " selected targets plotted — narrow the target list to focus";
     }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
     const perTargetPoints = seriesTargets.map((t) => pointsFor(byTarget.get(t.id) || [], yKey, xKey));
@@ -664,9 +689,9 @@ async function drawChart() {
 }
 
 function currentScopeUrl(range) {
-  const selected = el("target").value;
-  return selected
-    ? observationsUrl("target", selected, range)
+  const active = activeTargets();
+  return active.length === 1
+    ? observationsUrl("target", active[0].id, range)
     : observationsUrl("benchmark", benchmark.id, range);
 }
 
@@ -688,57 +713,167 @@ async function downloadObservations(accept, extension) {
   }
 }
 
-const MAX_PICKER_OPTIONS = 500;
+const MAX_RAIL_ROWS = 500;
 
-function fillTargetOptions(filterText) {
-  const targetSel = el("target");
-  const previous = targetSel.value;
-  targetSel.innerHTML = "";
-  const optAll = document.createElement("option");
-  optAll.value = "";
-  optAll.textContent = filterText ? "All matching targets" : "All targets";
-  targetSel.appendChild(optAll);
-  const needle = (filterText || "").toLowerCase();
-  let shown = 0;
-  for (const t of targets) {
-    if (needle && !t.attributes.name.toLowerCase().includes(needle)) continue;
-    if (shown >= MAX_PICKER_OPTIONS) break;
-    const o = document.createElement("option");
-    o.value = t.id;
-    o.textContent = t.attributes.name;
-    if (t.id === previous) o.selected = true;
-    targetSel.appendChild(o);
-    shown++;
+// ── The target rail: every target with a checkbox (all on by default) and a hover "only" link
+// that isolates it, Datadog-style. ──
+function railTargets() {
+  const needle = railFilter.trim().toLowerCase();
+  return needle
+    ? targets.filter((t) => t.attributes.name.toLowerCase().includes(needle))
+    : targets;
+}
+
+function setupTargetRail() {
+  const rail = el("target-rail");
+  rail.innerHTML =
+    '<div class="rail-head"><span class="rail-title">Targets</span>' +
+    '<span class="rail-meta" id="rail-meta"></span>' +
+    '<button type="button" class="rail-all" id="rail-all" hidden>All</button></div>' +
+    (targets.length > 100
+      ? '<input type="search" id="rail-search" class="target-search" placeholder="Filter ' + targets.length + ' targets…" autocomplete="off" />'
+      : "") +
+    '<div class="rail-list" id="rail-list"></div>' +
+    '<p class="rail-note" id="rail-note" hidden></p>';
+  const search = rail.querySelector("#rail-search");
+  if (search) {
+    search.addEventListener("input", () => {
+      railFilter = search.value;
+      renderRailList();
+    });
   }
+  rail.querySelector("#rail-all").addEventListener("click", () => {
+    selectedTargetIds = null;
+    renderRailList();
+    drawChart();
+  });
+  const list = rail.querySelector("#rail-list");
+  list.addEventListener("change", (e) => {
+    const id = e.target.dataset && e.target.dataset.id;
+    if (!id) return;
+    if (selectedTargetIds === null) selectedTargetIds = new Set(targets.map((t) => t.id));
+    if (e.target.checked) selectedTargetIds.add(id);
+    else selectedTargetIds.delete(id);
+    if (selectedTargetIds.size === targets.length) selectedTargetIds = null;
+    renderRailList();
+    drawChart();
+  });
+  list.addEventListener("click", (e) => {
+    const only = e.target.closest && e.target.closest(".rail-only");
+    if (!only) return;
+    e.preventDefault();
+    selectedTargetIds = new Set([only.dataset.id]);
+    renderRailList();
+    drawChart();
+  });
+  renderRailList();
+}
+
+function renderRailList() {
+  const matches = railTargets();
+  const shown = matches.slice(0, MAX_RAIL_ROWS);
+  el("rail-list").innerHTML = shown
+    .map((t) => {
+      const on = selectedTargetIds === null || selectedTargetIds.has(t.id);
+      return (
+        '<label class="rail-row">' +
+        '<input type="checkbox" data-id="' + esc(t.id) + '"' + (on ? " checked" : "") + " />" +
+        '<span class="rail-name" title="' + esc(t.attributes.name) + '">' + esc(t.attributes.name) + "</span>" +
+        '<button type="button" class="rail-only" data-id="' + esc(t.id) + '">only</button>' +
+        "</label>"
+      );
+    })
+    .join("");
+  const checked = selectedTargetIds === null ? targets.length : selectedTargetIds.size;
+  el("rail-meta").textContent = checked + "/" + targets.length;
+  el("rail-all").hidden = selectedTargetIds === null;
+  const note = el("rail-note");
+  note.hidden = matches.length <= MAX_RAIL_ROWS;
+  if (!note.hidden) note.textContent = "Showing " + MAX_RAIL_ROWS + " of " + matches.length + " — refine the filter.";
+}
+
+/** The targets currently checked (all when nothing is deselected). */
+function activeTargets() {
+  return selectedTargetIds === null ? targets : targets.filter((t) => selectedTargetIds.has(t.id));
+}
+
+// ── The metric picker: a checkbox dropdown; the table shows every checked metric as a column,
+// bars/line charts plot the primary (the chart default when checked, else the first checked). ──
+function defaultMetricSelection() {
+  const names = metricList.map((m) => m.name);
+  if (names.length <= 1) return names;
+  const primary = chartDecl && names.includes(chartDecl.y) ? chartDecl.y : names[0];
+  const ordered = [primary, ...names.filter((n) => n !== primary)];
+  // Fit heuristic: how many columns sit beside the target column without horizontal scrolling.
+  const width = el("chart").clientWidth || 900;
+  const fit = Math.max(1, Math.floor((width - 300) / 140));
+  const kept = ordered.slice(0, Math.min(fit, ordered.length));
+  return names.filter((n) => kept.includes(n)); // back to schema order
+}
+
+function setupMetricControl() {
+  if (metricList.length <= 1) {
+    metricSelection = metricList.map((m) => m.name);
+    return;
+  }
+  metricSelection = defaultMetricSelection();
+  const field = el("metric-field");
+  field.hidden = false;
+  const box = el("metric-dropdown");
+  box.innerHTML =
+    '<button type="button" class="dropdown-toggle" id="metric-toggle"></button>' +
+    '<div class="dropdown-panel" id="metric-panel" hidden></div>';
+  const toggle = el("metric-toggle");
+  const panel = el("metric-panel");
+  toggle.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+  });
+  document.addEventListener("click", (e) => {
+    if (!box.contains(e.target)) panel.hidden = true;
+  });
+  panel.addEventListener("change", (e) => {
+    const name = e.target.dataset && e.target.dataset.metric;
+    if (!name) return;
+    const set = new Set(metricSelection);
+    if (e.target.checked) set.add(name);
+    else if (set.size > 1) set.delete(name); // never zero metrics
+    metricSelection = metricList.map((m) => m.name).filter((n) => set.has(n));
+    renderMetricControl();
+    drawChart();
+  });
+  panel.addEventListener("click", (e) => {
+    const only = e.target.closest && e.target.closest(".rail-only");
+    if (!only) return;
+    e.preventDefault();
+    metricSelection = [only.dataset.metric];
+    renderMetricControl();
+    drawChart();
+  });
+  renderMetricControl();
+}
+
+function renderMetricControl() {
+  const panel = el("metric-panel");
+  if (!panel) return;
+  el("metric-toggle").textContent =
+    "Metrics · " + metricSelection.length + "/" + metricList.length;
+  panel.innerHTML = metricList
+    .map((m) => {
+      const on = metricSelection.includes(m.name);
+      return (
+        '<label class="rail-row">' +
+        '<input type="checkbox" data-metric="' + esc(m.name) + '"' + (on ? " checked" : "") + " />" +
+        '<span class="rail-name" title="' + esc(m.name) + '">' + esc(m.name) + "</span>" +
+        '<button type="button" class="rail-only" data-metric="' + esc(m.name) + '">only</button>' +
+        "</label>"
+      );
+    })
+    .join("");
 }
 
 function setupChartControls() {
-  const targetSel = el("target");
-  fillTargetOptions("");
-  // A plain dropdown stops working at hundreds of entries — add a text filter above it.
-  if (targets.length > 100) {
-    const input = document.createElement("input");
-    input.type = "search";
-    input.id = "target-search";
-    input.className = "target-search";
-    input.placeholder = "Filter " + targets.length + " targets…";
-    targetSel.parentElement.insertBefore(input, targetSel);
-    input.addEventListener("input", () => fillTargetOptions(input.value));
-  }
-
-  if (metricList.length > 1) {
-    const field = el("metric-field");
-    const metricSel = el("metric");
-    for (const m of metricList) {
-      const o = document.createElement("option");
-      o.value = m.name;
-      o.textContent = m.name;
-      if (chartDecl && m.name === chartDecl.y) o.selected = true;
-      metricSel.appendChild(o);
-    }
-    field.hidden = false;
-    metricSel.addEventListener("change", drawChart);
-  }
+  setupTargetRail();
+  setupMetricControl();
 
   // Range only applies to time-series charts.
   if (chartMode !== "TIME" && el("range-field")) el("range-field").hidden = true;
@@ -771,7 +906,6 @@ function setupChartControls() {
     });
   }
 
-  targetSel.addEventListener("change", drawChart);
   if (el("range")) el("range").addEventListener("change", drawChart);
   el("csv").addEventListener("click", () => downloadObservations("text/csv", "csv"));
   const jsonEl = el("json");
