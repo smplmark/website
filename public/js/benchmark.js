@@ -43,7 +43,7 @@ function gravatarUrl(hash, size) {
 // given the name is a link (used in the byline to jump to the Publisher tab).
 function attributionMarkup(pa, nameHref) {
   if (!pa) return "";
-  const label = esc(pa.name || pa.display_name || "");
+  const label = esc(pa.source_name || pa.name || pa.display_name || "");
   const nameEl = nameHref
     ? '<a href="' + esc(nameHref) + '" class="attribution-name" id="byline-link">' + label + "</a>"
     : '<span class="attribution-name">' + label + "</span>";
@@ -60,10 +60,41 @@ function attributionMarkup(pa, nameHref) {
     }
     return '<span class="attribution"><span class="who">' + logoImg + nameEl + "</span>" + verified + "</span>";
   }
+  if (pa.kind === "INGESTED") {
+    // Ingested reference data: the badge is the source's name plus its license, never an avatar.
+    const lic = pa.license
+      ? ' <span class="attribution-license">' + esc(pa.license) + "</span>"
+      : "";
+    return '<span class="attribution"><span class="who">' + nameEl + "</span>" + lic + "</span>";
+  }
   // PERSONAL
   const g = gravatarUrl(pa.gravatar_hash, 44);
   const avatar = g ? '<img class="attribution-avatar" src="' + esc(g) + '" alt="" />' : "";
   return '<span class="attribution"><span class="who">' + avatar + nameEl + "</span></span>";
+}
+
+const CATEGORY_LABELS = {
+  HARDWARE: "Hardware",
+  DATABASE: "Database",
+  ML_AI: "ML & AI",
+  STORAGE: "Storage",
+  NETWORK: "Network",
+  OTHER: "Other",
+};
+
+// Category + tag chips. The category chip links to the filtered browse page, tags likewise.
+function chipsMarkup(a) {
+  const chips = [];
+  if (a.category && a.category !== "OTHER") {
+    chips.push(
+      '<a class="pill category" href="/benchmarks?category=' + encodeURIComponent(a.category) + '">' +
+        esc(CATEGORY_LABELS[a.category] || a.category) + "</a>",
+    );
+  }
+  for (const t of Array.isArray(a.tags) ? a.tags : []) {
+    chips.push('<a class="pill tag" href="/benchmarks?tag=' + encodeURIComponent(t) + '">' + esc(t) + "</a>");
+  }
+  return chips.join("");
 }
 
 // Drop a badge image that fails to load (missing logo / gravatar 404) rather than showing a broken icon.
@@ -201,15 +232,23 @@ function renderHead() {
     esc(a.name) +
     (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "");
   el("bm-tagline").textContent = a.description || "";
+  const chipsBox = el("bm-chips");
+  if (chipsBox) chipsBox.innerHTML = chipsMarkup(a);
   // Byline comes from the frozen published_as snapshot, never a live account lookup.
   const pa = a.published_as;
-  if (pa) {
+  if (pa && pa.kind === "INGESTED") {
+    el("bm-byline").innerHTML =
+      "Source: " + attributionMarkup(pa, "#publisher") +
+      ' <span class="ingested-note">— ingested, unclaimed</span>';
+  } else if (pa) {
     el("bm-byline").innerHTML = "Published by " + attributionMarkup(pa, "#publisher");
+  } else {
+    el("bm-byline").textContent = "";
+  }
+  if (pa) {
     const link = el("byline-link");
     if (link) link.addEventListener("click", (e) => { e.preventDefault(); activateTab("publisher"); });
     wireBadgeImages(el("bm-byline"));
-  } else {
-    el("bm-byline").textContent = "";
   }
 }
 
@@ -266,10 +305,24 @@ function renderPublisher() {
   // Lead with the frozen attribution so the tab is self-consistent even if the live account lookup
   // failed. The account fetch below only adds optional extra detail.
   if (pa) {
-    const kindLabel = pa.kind === "ORGANIZATION" ? "Organization" : "Individual";
+    const kindLabel =
+      pa.kind === "ORGANIZATION" ? "Organization" : pa.kind === "INGESTED" ? "Ingested" : "Individual";
     html += '<div class="publisher-badge">' + attributionMarkup(pa) + '<span class="publisher-kind">' + kindLabel + "</span></div>";
     if (pa.kind === "ORGANIZATION" && Array.isArray(pa.verified_domains) && pa.verified_domains.length) {
       html += '<p class="since">Verified domain' + (pa.verified_domains.length > 1 ? "s" : "") + ": " + pa.verified_domains.map(esc).join(", ") + "</p>";
+    }
+    if (pa.kind === "INGESTED") {
+      // Full provenance, from the frozen snapshot: where it came from, under what license, when.
+      const src = safeHttpUrl(pa.source_url);
+      const srcEl = src
+        ? '<a class="site" href="' + esc(src) + '" target="_blank" rel="noopener">' + esc(pa.source_name || src) + "</a>"
+        : esc(pa.source_name || "its source");
+      html +=
+        '<p class="since">Ingested from ' + srcEl +
+        (pa.license ? " under " + esc(pa.license) : "") +
+        (pa.retrieved_at ? ", retrieved " + esc(fmtDate(pa.retrieved_at)) : "") + ".</p>" +
+        '<p class="since">Hosted as open reference data; this benchmark is unclaimed by its source. ' +
+        'Removal requests: <a class="site" href="mailto:support@smplmark.org">support@smplmark.org</a>.</p>';
     }
   }
   if (publisher) {

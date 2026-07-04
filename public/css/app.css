@@ -116,6 +116,31 @@ h2.section {
 .pill.withdrawn { color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 40%, transparent); }
 .pill.private { color: var(--muted); }
 
+/* ── Category + tag chips ── */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.card .chips { margin: 0 0 10px; }
+.pill.category { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.pill.tag { font-family: var(--mono); }
+a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.card .source-line { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+.attribution-license {
+  display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); color: var(--ok);
+  vertical-align: middle; margin-left: 6px;
+}
+.ingested-note { color: var(--muted); }
+
+/* ── /benchmarks filter bar ── */
+.list-filters { margin-bottom: 16px; align-items: end; }
+.list-filters:empty { display: none; }
+.active-tag { font-size: 13px; color: var(--muted); align-self: center; }
+.active-tag strong { color: var(--text); font-family: var(--mono); font-weight: 600; }
+.clear-tag {
+  background: none; border: 1px solid var(--border); border-radius: 999px; color: var(--muted);
+  width: 20px; height: 20px; line-height: 1; cursor: pointer; margin-left: 4px;
+}
+.clear-tag:hover { border-color: var(--accent); color: var(--accent); }
+
 /* ── Credibility banners ── */
 #banners { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 4px; }
 .banner {
