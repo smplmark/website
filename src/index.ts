@@ -34,6 +34,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
+    // Domain-verification files (e.g. the Microsoft publisher-domain association) must be reachable at
+    // the exact host a verifier requests, so serve /.well-known/* directly — no apex→www redirect.
+    if (url.pathname.startsWith("/.well-known/")) {
+      return env.ASSETS.fetch(request);
+    }
+
     // Apex → www (single canonical marketing host).
     if (url.hostname === APEX_HOST) {
       url.protocol = "https:";

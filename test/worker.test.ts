@@ -48,4 +48,15 @@ describe("website worker", () => {
     expect(res.status).toBe(308);
     expect(res.headers.get("location")).toBe("https://app.smplmark.org/api/v1/benchmarks");
   });
+
+  it("serves the Microsoft publisher-domain file on www AND the apex (no redirect)", async () => {
+    for (const host of ["https://www.smplmark.org", "https://smplmark.org"]) {
+      const res = await noFollow(`${host}/.well-known/microsoft-identity-association.json`);
+      expect(res.status).toBe(200); // apex serves it directly, not a 301 to www
+      const doc = (await res.json()) as { associatedApplications: { applicationId: string }[] };
+      expect(doc.associatedApplications[0].applicationId).toBe(
+        "941cf0fd-6ad3-443f-9f1e-3e58445d4fed",
+      );
+    }
+  });
 });
