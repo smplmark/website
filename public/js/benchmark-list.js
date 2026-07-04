@@ -193,6 +193,50 @@ function applyFilters(filters) {
   load();
 }
 
+// The tag rail: every tag in the current result set with its benchmark count, one click to
+// filter. On the home page (not filterable) a click goes to /benchmarks?tag=….
+function renderTagRail(resources, filters, filterable) {
+  const rail = document.getElementById("tag-rail");
+  if (!rail) return;
+  const counts = new Map();
+  for (const b of resources) {
+    for (const t of Array.isArray(b.attributes.tags) ? b.attributes.tags : []) {
+      counts.set(t, (counts.get(t) || 0) + 1);
+    }
+  }
+  const tags = [...counts.entries()].sort((a, z) => z[1] - a[1] || (a[0] < z[0] ? -1 : 1));
+  if (!tags.length && !filters.tag) {
+    rail.innerHTML = "";
+    return;
+  }
+  rail.innerHTML =
+    '<h3 class="rail-title">Tags</h3><ul class="tag-list">' +
+    tags
+      .map(([tag, count]) => {
+        const active = filters.tag === tag;
+        return (
+          '<li><a href="' + esc(withApi("/benchmarks?tag=" + encodeURIComponent(tag))) +
+          '" class="tag-link' + (active ? " active" : "") + '" data-tag="' + esc(tag) + '">' +
+          '<span class="tag-name">' + esc(tag) + "</span>" +
+          '<span class="tag-count">' + count + "</span></a></li>"
+        );
+      })
+      .join("") +
+    "</ul>" +
+    (filters.tag && !counts.has(filters.tag)
+      ? '<p class="rail-note">Filtered by <strong>' + esc(filters.tag) + "</strong> — no matches.</p>"
+      : "");
+  if (filterable) {
+    rail.querySelectorAll("a.tag-link").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        const tag = a.dataset.tag;
+        applyFilters({ ...currentFilters(), tag: filters.tag === tag ? "" : tag });
+      });
+    });
+  }
+}
+
 async function load() {
   const grid = document.getElementById("benchmark-grid");
   const status = document.getElementById("status");
@@ -224,6 +268,7 @@ async function load() {
     const doc = await res.json();
 
     if (!doc.data.length) {
+      renderTagRail(doc.data, filters, filterable);
       grid.innerHTML = "";
       if (status) {
         status.textContent =
@@ -237,14 +282,16 @@ async function load() {
     }
     if (status) status.textContent = "";
 
+    renderTagRail(doc.data, filters, filterable);
+
     grid.innerHTML = doc.data
       .map((b) => {
         const a = b.attributes;
-        const cls = a.status === "WITHDRAWN" ? "withdrawn" : "published";
-        const label = a.status === "WITHDRAWN" ? "withdrawn" : "published";
+        // Everything a visitor can see is published by definition — only WITHDRAWN warrants a pill.
+        const pill = a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "";
         return `
           <a class="card" href="${esc(withApi("/benchmarks/" + encodeURIComponent(a.key)))}">
-            <h3>${esc(a.name)} <span class="pill ${cls}">${esc(label)}</span></h3>
+            <h3>${esc(a.name)}${pill}</h3>
             <p>${esc(a.description || "")}</p>
             ${cardChips(a)}
             ${cardSource(a)}

@@ -68,11 +68,8 @@ function attributionMarkup(pa, nameHref) {
     return '<span class="attribution"><span class="who">' + logoImg + nameEl + "</span>" + verified + "</span>";
   }
   if (pa.kind === "INGESTED") {
-    // Ingested reference data: the badge is the source's name plus its license, never an avatar.
-    const lic = pa.license
-      ? ' <span class="attribution-license">' + esc(pa.license) + "</span>"
-      : "";
-    return '<span class="attribution"><span class="who">' + nameEl + "</span>" + lic + "</span>";
+    // The badge is simply the source's name; license and attribution details live on /about.
+    return '<span class="attribution"><span class="who">' + nameEl + "</span></span>";
   }
   // PERSONAL
   const g = gravatarUrl(pa.gravatar_hash, 44);
@@ -199,8 +196,11 @@ let chartDecl = null;
 let chartMode = "TIME";
 let chart = null;
 let chartDrawn = false;
+let chartView = "bars"; // CATEGORY visualization: "bars" | "table"
 
 async function init() {
+  const crumb = el("crumb-back");
+  if (crumb) crumb.href = withApi("/benchmarks");
   const key = keyFromPath();
   try {
     const doc = await fetchJson(API + "/api/v1/benchmarks?filter[key]=" + encodeURIComponent(key));
@@ -282,9 +282,7 @@ function renderHead() {
   // Byline comes from the frozen published_as snapshot, never a live account lookup.
   const pa = a.published_as;
   if (pa && pa.kind === "INGESTED") {
-    el("bm-byline").innerHTML =
-      "Source: " + attributionMarkup(pa, "#publisher") +
-      ' <span class="ingested-note">— ingested, unclaimed</span>';
+    el("bm-byline").innerHTML = "Source: " + attributionMarkup(pa, "#publisher");
   } else if (pa) {
     el("bm-byline").innerHTML = "Published by " + attributionMarkup(pa, "#publisher");
   } else {
@@ -346,35 +344,48 @@ function renderOverview() {
 }
 
 function renderMethodology() {
-  el("methodology-body").innerHTML = paragraphs(benchmark.attributes.methodology);
+  const a = benchmark.attributes;
+  if (a.methodology) {
+    el("methodology-body").innerHTML = paragraphs(a.methodology);
+    return;
+  }
+  const pa = a.published_as;
+  const src = pa && pa.kind === "INGESTED" ? safeHttpUrl(pa.source_url) : null;
+  el("methodology-body").innerHTML =
+    '<p class="muted">No published methodology.</p>' +
+    (src
+      ? '<p class="muted">See <a class="site" href="' + esc(src) + '" target="_blank" rel="noopener">' +
+        esc(pa.source_name || "the source") + "</a> for how these results were produced.</p>"
+      : "");
 }
 
 function renderPublisher() {
   const box = el("publisher-body");
   const pa = benchmark.attributes.published_as;
   let html = "";
-  // Lead with the frozen attribution so the tab is self-consistent even if the live account lookup
-  // failed. The account fetch below only adds optional extra detail.
+  if (pa && pa.kind === "INGESTED") {
+    // Who published the data (the source), that they're verified (we pulled it from them
+    // directly), and freshness. License + attribution details live at /about#attribution.
+    const src = safeHttpUrl(pa.source_url);
+    const nameEl = src
+      ? '<a class="attribution-name" href="' + esc(src) + '" target="_blank" rel="noopener">' + esc(pa.source_name || src) + "</a>"
+      : '<span class="attribution-name">' + esc(pa.source_name || "") + "</span>";
+    html +=
+      '<div class="publisher-badge"><span class="attribution"><span class="who">' + nameEl + "</span></span>" +
+      '<span class="publisher-kind verified">' + checkIcon() + "Verified</span></div>";
+    if (pa.retrieved_at) {
+      html += '<p class="since">Last refreshed ' + esc(fmtDate(pa.retrieved_at)) + ".</p>";
+    }
+    box.innerHTML = html;
+    return;
+  }
   if (pa) {
-    const kindLabel =
-      pa.kind === "ORGANIZATION" ? "Organization" : pa.kind === "INGESTED" ? "Ingested" : "Individual";
-    html += '<div class="publisher-badge">' + attributionMarkup(pa) + '<span class="publisher-kind">' + kindLabel + "</span></div>";
-    if (pa.kind === "ORGANIZATION" && Array.isArray(pa.verified_domains) && pa.verified_domains.length) {
-      html += '<p class="since">Verified domain' + (pa.verified_domains.length > 1 ? "s" : "") + ": " + pa.verified_domains.map(esc).join(", ") + "</p>";
-    }
-    if (pa.kind === "INGESTED") {
-      // Full provenance, from the frozen snapshot: where it came from, under what license, when.
-      const src = safeHttpUrl(pa.source_url);
-      const srcEl = src
-        ? '<a class="site" href="' + esc(src) + '" target="_blank" rel="noopener">' + esc(pa.source_name || src) + "</a>"
-        : esc(pa.source_name || "its source");
-      html +=
-        '<p class="since">Ingested from ' + srcEl +
-        (pa.license ? " under " + esc(pa.license) : "") +
-        (pa.retrieved_at ? ", retrieved " + esc(fmtDate(pa.retrieved_at)) : "") + ".</p>" +
-        '<p class="since">Hosted as open reference data; this benchmark is unclaimed by its source. ' +
-        'Removal requests: <a class="site" href="mailto:support@smplmark.org">support@smplmark.org</a>.</p>';
-    }
+    // ORGANIZATION publishes require a verified domain, so the kind decides the tier.
+    const verified = pa.kind === "ORGANIZATION";
+    html +=
+      '<div class="publisher-badge">' + attributionMarkup(pa) +
+      '<span class="publisher-kind' + (verified ? " verified" : "") + '">' +
+      (verified ? checkIcon() + "Verified" : "Unverified") + "</span></div>";
   }
   if (publisher) {
     const p = publisher.attributes;
@@ -520,12 +531,9 @@ function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
   chart = new uPlot(opts, data, el("chart"));
 }
 
-const MAX_BARS = 50;
-let barsShown = MAX_BARS;
-
 function renderBars(seriesTargets, perTargetPoints, yKey) {
-  // CATEGORY: reduce each target's observations to a single value (mean of y), ranked best-first;
-  // high-cardinality benchmarks render the top slice with a "show more" expander.
+  // CATEGORY: reduce each target's observations to a single value (mean of y), ranked best-first.
+  // Every row renders — the data is already in the browser, and scrolling beats clicking.
   destroyChart();
   const rows = seriesTargets.map((t, i) => {
     const pts = perTargetPoints[i];
@@ -537,11 +545,9 @@ function renderBars(seriesTargets, perTargetPoints, yKey) {
   if (!rows.some((r) => r.value != null)) { el("empty").hidden = false; return; }
   el("empty").hidden = true;
   const unit = metricUnit(yKey);
-  const shown = rows.slice(0, barsShown);
-  const remaining = rows.length - shown.length;
   el("chart").innerHTML =
     '<div class="bars">' +
-    shown
+    rows
       .map((r, i) => {
         const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
         const val = r.value == null ? "—" : r.value.toFixed(1) + (unit ? " " + unit : "");
@@ -552,18 +558,67 @@ function renderBars(seriesTargets, perTargetPoints, yKey) {
         );
       })
       .join("") +
-    "</div>" +
-    (remaining > 0
-      ? '<button type="button" id="more-bars" class="more-bars">Show ' +
-        Math.min(MAX_BARS, remaining) + " more of " + rows.length + " targets</button>"
-      : "");
-  const more = el("more-bars");
-  if (more) {
-    more.addEventListener("click", () => {
-      barsShown += MAX_BARS;
-      renderBars(seriesTargets, perTargetPoints, yKey);
+    "</div>";
+}
+
+// ── Table view (CATEGORY benchmarks): every metric per target, sortable by column ──
+let tableSort = { key: null, desc: true };
+
+function fmtCell(v) {
+  if (v == null) return "—";
+  if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString();
+  return (Math.round(v * 100) / 100).toString();
+}
+
+function renderTable(seriesTargets, byTarget) {
+  destroyChart();
+  const metricNames = metricList.map((m) => m.name);
+  const rows = seriesTargets.map((t) => {
+    const obs = byTarget.get(t.id) || [];
+    const cells = {};
+    for (const name of metricNames) {
+      let sum = 0, n = 0;
+      for (const s of obs) {
+        const v = (s.attributes.metrics || {})[name];
+        if (typeof v === "number") { sum += v; n++; }
+      }
+      cells[name] = n ? sum / n : null;
+    }
+    return { name: t.attributes.name, cells };
+  });
+  const key = tableSort.key && metricNames.includes(tableSort.key) ? tableSort.key : currentY();
+  rows.sort((a, z) => {
+    const av = a.cells[key], zv = z.cells[key];
+    const d = (zv == null ? -Infinity : zv) - (av == null ? -Infinity : av);
+    return tableSort.desc ? d : -d;
+  });
+  el("empty").hidden = true;
+  el("chart").innerHTML =
+    '<div class="table-wrap"><table class="data-table"><thead><tr><th>Target</th>' +
+    metricNames
+      .map(
+        (name) =>
+          '<th class="sortable" data-metric="' + esc(name) + '">' + esc(name) +
+          (name === key ? (tableSort.desc ? " ↓" : " ↑") : "") + "</th>",
+      )
+      .join("") +
+    "</tr></thead><tbody>" +
+    rows
+      .map(
+        (r) =>
+          '<tr><td title="' + esc(r.name) + '">' + esc(r.name) + "</td>" +
+          metricNames.map((name) => "<td>" + esc(fmtCell(r.cells[name])) + "</td>").join("") +
+          "</tr>",
+      )
+      .join("") +
+    "</tbody></table></div>";
+  el("chart").querySelectorAll("th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const metric = th.dataset.metric;
+      tableSort = { key: metric, desc: tableSort.key === metric ? !tableSort.desc : true };
+      renderTable(seriesTargets, byTarget);
     });
-  }
+  });
 }
 
 // Line charts cap the series count — hundreds of overlaid lines are unreadable and slow.
@@ -571,14 +626,9 @@ const MAX_SERIES = 12;
 
 async function drawChart() {
   chartDrawn = true;
-  barsShown = MAX_BARS; // a redraw (metric/target/range change) resets the bar expander
   const yKey = currentY();
   const selected = el("target").value;
   const range = chartMode === "TIME" ? currentRange() : null;
-  el("json").href = selected
-    ? observationsUrl("target", selected, range)
-    : observationsUrl("benchmark", benchmark.id, range);
-
   if (!yKey) {
     el("chart-status").textContent = "This benchmark has no numeric metric to plot.";
     return;
@@ -596,7 +646,8 @@ async function drawChart() {
     }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
     const perTargetPoints = seriesTargets.map((t) => pointsFor(byTarget.get(t.id) || [], yKey, xKey));
-    if (chartMode === "CATEGORY") renderBars(seriesTargets, perTargetPoints, yKey);
+    if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesTargets, byTarget);
+    else if (chartMode === "CATEGORY") renderBars(seriesTargets, perTargetPoints, yKey);
     else renderXY(seriesTargets, perTargetPoints, yKey, chartMode === "TIME");
     const total = perTargetPoints.reduce((n, pts) => n + pts.length, 0);
     el("chart-status").textContent =
@@ -611,23 +662,28 @@ async function drawChart() {
   }
 }
 
-async function downloadCsv() {
+function currentScopeUrl(range) {
   const selected = el("target").value;
+  return selected
+    ? observationsUrl("target", selected, range)
+    : observationsUrl("benchmark", benchmark.id, range);
+}
+
+// CSV and JSON behave identically: fetch the current scope, download as a file.
+async function downloadObservations(accept, extension) {
   const range = chartMode === "TIME" ? currentRange() : null;
-  const tid = selected || (targets[0] && targets[0].id);
-  if (!tid) return;
   try {
-    const res = await fetch(observationsUrl("target", tid, range), { headers: { Accept: "text/csv" } });
+    const res = await fetch(currentScopeUrl(range), { headers: { Accept: accept } });
     if (!res.ok) throw new Error(await errorDetail(res));
     const blob = await res.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = benchmark.attributes.key + ".csv";
+    a.download = benchmark.attributes.key + "." + extension;
     a.click();
     URL.revokeObjectURL(a.href);
   } catch (err) {
     el("chart-status").className = "status error";
-    el("chart-status").textContent = "CSV download failed: " + err.message;
+    el("chart-status").textContent = extension.toUpperCase() + " download failed: " + err.message;
   }
 }
 
@@ -686,9 +742,31 @@ function setupChartControls() {
   // Range only applies to time-series charts.
   if (chartMode !== "TIME" && el("range-field")) el("range-field").hidden = true;
 
+  // CATEGORY benchmarks get a visualization picker (ranked bars, or a sortable table of every
+  // metric per target).
+  if (chartMode === "CATEGORY") {
+    const field = document.createElement("div");
+    field.className = "field";
+    field.innerHTML =
+      '<label for="view-mode">View</label>' +
+      '<select id="view-mode"><option value="bars">Bars</option><option value="table">Table</option></select>';
+    const metricField = el("metric-field");
+    metricField.parentElement.insertBefore(field, metricField);
+    field.querySelector("#view-mode").addEventListener("change", (e) => {
+      chartView = e.target.value;
+      tableSort = { key: null, desc: true };
+      drawChart();
+    });
+  }
+
   targetSel.addEventListener("change", drawChart);
   if (el("range")) el("range").addEventListener("change", drawChart);
-  el("csv").addEventListener("click", downloadCsv);
+  el("csv").addEventListener("click", () => downloadObservations("text/csv", "csv"));
+  const jsonEl = el("json");
+  jsonEl.addEventListener("click", (e) => {
+    e.preventDefault();
+    downloadObservations("application/vnd.api+json", "json");
+  });
 }
 
 init();

@@ -305,3 +305,49 @@ footer.site a:hover { color: var(--text); }
 }
 .big-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .big-search::placeholder { color: var(--muted); }
+
+/* ── Two-column list layout with the tag rail ── */
+.list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 28px; align-items: start; }
+@media (max-width: 800px) { .list-layout { grid-template-columns: 1fr; } .tag-rail { order: -1; } }
+.tag-rail .rail-title {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin: 4px 0 10px;
+}
+.tag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.tag-list .tag-link {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 10px; border-radius: 8px; color: var(--muted); font-size: 13.5px;
+}
+.tag-list .tag-link:hover { background: var(--panel-2); color: var(--text); text-decoration: none; }
+.tag-list .tag-link.active { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.tag-list .tag-name { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-list .tag-count {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 7px; line-height: 17px;
+}
+.tag-list .tag-link.active .tag-count { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.rail-note { font-size: 12.5px; color: var(--muted); margin: 10px 2px; }
+
+/* ── Breadcrumbs ── */
+.crumbs { margin: 0 0 14px; font-size: 14px; }
+.crumbs a { color: var(--muted); }
+.crumbs a:hover { color: var(--accent); }
+
+/* ── Verified publisher chip ── */
+.publisher-kind.verified { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.publisher-kind.verified svg { width: 12px; height: 12px; vertical-align: -1px; margin-right: 4px; }
+
+/* ── Data-table view (CATEGORY benchmarks) ── */
+.table-wrap { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.data-table th, .data-table td {
+  text-align: right; padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.data-table th:first-child, .data-table td:first-child {
+  text-align: left; max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+}
+.data-table th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.data-table th.sortable { cursor: pointer; }
+.data-table th.sortable:hover { color: var(--accent); }
+.data-table td { font-family: var(--mono); color: var(--text); }
+.data-table td:first-child { font-family: var(--sans); }
