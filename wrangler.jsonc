@@ -26,7 +26,9 @@
     "directory": "./public/",
     "binding": "ASSETS",
     "run_worker_first": true,
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // Canonical URLs carry no trailing slash: /about, /terms (not /about/, /terms/).
+    "html_handling": "drop-trailing-slash"
   },
 
   "observability": {
