@@ -13,6 +13,8 @@
   --radius: 10px;
   --maxw: 1040px;
   --contentw: 720px;
+  /* One height for every control in a filter row (selects, segmented controls, inputs). */
+  --control-h: 35px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -260,7 +262,8 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 7px;
-  padding: 7px 10px;
+  height: var(--control-h);
+  padding: 0 10px;
   font-size: 14px;
   font-family: var(--sans);
 }
@@ -372,12 +375,13 @@ footer.site a.gh svg { display: block; }
 
 /* ── Segmented control (two-option radio group, e.g. the Data tab's View picker) ── */
 .segmented {
-  display: inline-flex; padding: 3px; gap: 2px;
+  display: inline-flex; height: var(--control-h); padding: 3px; gap: 2px;
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px;
 }
 .seg-option {
+  display: inline-flex; align-items: center;
   border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px;
-  padding: 5px 16px; border-radius: 6px; cursor: pointer;
+  line-height: 1; padding: 0 16px; border-radius: 6px; cursor: pointer;
 }
 .seg-option:hover { color: var(--text); }
 .seg-option.active {
