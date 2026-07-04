@@ -17,6 +17,13 @@ const esc = (s) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
   );
 
+function apiFetchHint() {
+  const h = location.hostname;
+  return h === "localhost" || h === "127.0.0.1"
+    ? " Is the app Worker running? Start it with `npm run dev` in the app repo (or the \u201Capi\u201D server in the preview panel) \u2014 it serves the local API on :8788."
+    : "";
+}
+
 function safeHttpUrl(u) {
   try {
     const p = new URL(u);
@@ -201,7 +208,7 @@ async function init() {
   } catch (err) {
     el("bm-name").textContent = "Error";
     el("load-status").className = "status error";
-    el("load-status").textContent = "Failed to load benchmark: " + err.message;
+    el("load-status").textContent = "Failed to load benchmark: " + err.message + "." + apiFetchHint();
     return;
   }
   if (!benchmark) {

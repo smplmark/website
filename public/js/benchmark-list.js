@@ -36,6 +36,13 @@ function withApi(path) {
   return path;
 }
 
+function apiFetchHint() {
+  const h = location.hostname;
+  return h === "localhost" || h === "127.0.0.1"
+    ? " Is the app Worker running? Start it with `npm run dev` in the app repo (or the \u201Capi\u201D server in the preview panel) \u2014 it serves the local API on :8788."
+    : "";
+}
+
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
@@ -179,7 +186,7 @@ async function load() {
   } catch (err) {
     if (status) {
       status.className = "status error";
-      status.textContent = "Failed to load benchmarks: " + err.message;
+      status.textContent = "Failed to load benchmarks: " + err.message + "." + apiFetchHint();
     }
   }
 }
