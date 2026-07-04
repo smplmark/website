@@ -12,7 +12,7 @@ const TILE = "#0e1116"; // favicon tile (site dark bg)
 
 const wordmarkSvg = (text, accent) => `<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="440">
   <text x="20" y="310" font-family="${FONT}" font-size="220" font-weight="700" letter-spacing="-8">
-    <tspan fill="${text}">smpl</tspan><tspan fill="${accent}">mark</tspan><tspan font-size="74" dy="-120" font-weight="300" letter-spacing="3" fill="${text}">TM</tspan>
+    <tspan fill="${text}">smpl</tspan><tspan fill="${accent}">mark</tspan><tspan font-size="42" dy="-132" font-weight="300" letter-spacing="2" fill="${text}">TM</tspan>
   </text>
 </svg>`;
 

@@ -354,3 +354,11 @@ footer.site a:hover { color: var(--text); }
 
 /* "complete" — the publisher's closed/finished signal. */
 .pill.complete { color: var(--muted); border-style: dashed; }
+
+/* Sign up is the one call-to-action in the nav — a pill, not a sibling link, so
+   "Sign in / Sign up" reads as two different kinds of things. */
+header.site nav a.nav-cta {
+  background: var(--accent); color: #fff; font-weight: 600;
+  padding: 5px 14px; border-radius: 999px;
+}
+header.site nav a.nav-cta:hover { color: #fff; filter: brightness(1.12); }
