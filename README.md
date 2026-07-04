@@ -30,21 +30,33 @@ Pages: `/` (home), `/benchmarks` (list), `/benchmarks/{key}` (data-driven benchm
 
 The viewer (`public/js/benchmark.js`, `public/js/benchmark-list.js`) fetches published benchmarks,
 targets, runs, and observations from the app's public API. It resolves the API base at runtime
-(`apiBase()`): on `www`/apex it uses `https://app.smplmark.org`; otherwise it falls back to
-same-origin. For local development against a locally-running app Worker, append `?api=` to the URL
-(e.g. `http://localhost:8787/benchmarks/scheduler-latency?api=http://localhost:8788`) or set
-`window.SM_API_BASE`. Only world-visible (PUBLISHED / WITHDRAWN) data is reachable — these are
-unauthenticated public reads.
+(`apiBase()`): on `www`/apex it uses `https://app.smplmark.org`; on `localhost` it defaults to the
+local app Worker at `http://localhost:8788`; otherwise it falls back to same-origin. An explicit
+`?api=<url>` query param (or `window.SM_API_BASE`) overrides all of that and stays sticky across
+internal links — e.g. `?api=https://app.smplmark.org` browses the local site against production
+data. Only world-visible (PUBLISHED / WITHDRAWN) data is reachable — these are unauthenticated
+public reads.
 
 ## Local development
 
+The full local loop is two Workers and a seeded local D1 — no deploys, no network:
+
 ```bash
+# Terminal 1 — the app API on :8788 (in the app repo)
+cd ../smplmark-app
+npm run db:migrate:local              # once: apply migrations to the local D1
+npm run db:seed:local                 # once: dev account + scheduler-latency
+node ingestion/import.mjs             # optional: the full ingested dataset (offline, from the archive)
+npm run dev                           # wrangler dev — http://localhost:8788
+
+# Terminal 2 — this site on :8787
 npm install
-npm run dev          # wrangler dev — http://localhost:8787 (marketing + viewer)
+npm run dev                           # wrangler dev — http://localhost:8787 (marketing + viewer)
 ```
 
-To exercise the viewer locally, also run the app Worker (from the `app` repo, e.g. on `:8788`) and
-open a benchmark page with `?api=http://localhost:8788`.
+Open `http://localhost:8787/benchmarks` — the viewer talks to `:8788` automatically. Edits to
+`public/` and `src/` hot-reload; re-run the importer any time to rebuild the local dataset (it
+only ever touches the ingested scope).
 
 ## Testing
 

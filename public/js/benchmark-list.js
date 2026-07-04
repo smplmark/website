@@ -19,7 +19,21 @@ function apiBase() {
   if (window.SM_API_BASE) return String(window.SM_API_BASE).replace(/\/+$/, "");
   const h = location.hostname;
   if (h === "www.smplmark.org" || h === "smplmark.org") return "https://app.smplmark.org";
-  return ""; // same-origin fallback (e.g. a combined local deployment)
+  // Local-loop convention: website on :8787, app API on :8788 (README "Local development").
+  if (h === "localhost" || h === "127.0.0.1") return "http://localhost:8788";
+  return ""; // same-origin fallback (e.g. a combined preview deployment)
+}
+
+// Keep an explicit ?api= override sticky across internal navigation (dev tool: lets the local
+// site browse any API host without losing the override on every click).
+function withApi(path) {
+  try {
+    const override = new URLSearchParams(location.search).get("api");
+    if (override) {
+      return path + (path.includes("?") ? "&" : "?") + "api=" + encodeURIComponent(override);
+    }
+  } catch (_) {}
+  return path;
 }
 
 function esc(s) {
@@ -153,7 +167,7 @@ async function load() {
         const cls = a.status === "WITHDRAWN" ? "withdrawn" : "published";
         const label = a.status === "WITHDRAWN" ? "withdrawn" : "published";
         return `
-          <a class="card" href="/benchmarks/${encodeURIComponent(a.key)}">
+          <a class="card" href="${esc(withApi("/benchmarks/" + encodeURIComponent(a.key)))}">
             <h3>${esc(a.name)} <span class="pill ${cls}">${esc(label)}</span></h3>
             <p>${esc(a.description || "")}</p>
             ${cardChips(a)}
