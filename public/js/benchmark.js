@@ -1,7 +1,7 @@
 "use strict";
 
 // Data-driven benchmark page. Everything shown is pulled from the API for the {key} in the URL.
-// The chart renders one of three modes declared in sample_schema.chart:
+// The chart renders one of three modes declared in observation_schema.chart:
 //   TIME     x = created_at        → time-series (scheduler-latency)
 //   NUMBER   x = a numeric metric  → numeric-x overlay (aligns disjoint runs, e.g. elapsed_ms)
 //   CATEGORY x = null              → one bar per target (a scalar per target)
@@ -246,7 +246,7 @@ async function init() {
     runsTruncated = res.truncated;
   } catch (_) {}
 
-  const schema = a.sample_schema || { metrics: [], derived: [] };
+  const schema = a.observation_schema || { metrics: [], derived: [] };
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
   chartDecl = schema.chart || inferChart(metricList);
   chartMode = chartDecl ? chartDecl.x_kind || inferKind(chartDecl.x) : "TIME";
