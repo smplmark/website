@@ -87,6 +87,10 @@ function cardSource(a) {
   );
 }
 
+// The home page is a teaser, not the catalog: it shows only the most recent benchmarks and sends
+// visitors to /benchmarks (the full, filterable browse) for everything else.
+var HOME_RECENT_LIMIT = 50;
+
 // Sort menu: newest (the server default) plus reddit-style popularity windows.
 var SORT_OPTIONS = [
   { value: "", label: "Newest" },
@@ -256,6 +260,8 @@ async function load() {
   if (filters.tag) qs.set("filter[tag]", filters.tag);
   if (filters.q) qs.set("filter[search]", filters.q);
   if (filters.sort) qs.set("sort", "-" + filters.sort);
+  // Home page: cap at the most recent benchmarks (newest-first is the server default).
+  if (!filterable) qs.set("page[size]", String(HOME_RECENT_LIMIT));
   if ([...qs].length) url += "?" + qs.toString();
 
   if (status) {
