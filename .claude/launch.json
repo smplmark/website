@@ -6,7 +6,7 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 8787,
-      "autoPort": false
+      "autoPort": true
     },
     {
       "name": "api",
