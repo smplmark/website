@@ -78,7 +78,11 @@ async function load() {
               : esc(a.name)) +
             '<div class="src-host">' + esc(hostOf(a.url)) + "</div></td>" +
             "<td>" + esc(a.description || "") + "</td>" +
-            "<td>" + esc(a.license || "—") + "</td>" +
+            "<td>" +
+            (a.license && safeHttpUrl(a.license_url)
+              ? '<a href="' + esc(safeHttpUrl(a.license_url)) + '" target="_blank" rel="noopener">' + esc(a.license) + "</a>"
+              : esc(a.license || "—")) +
+            "</td>" +
             '<td class="num">' + (typeof a.benchmark_count === "number" ? a.benchmark_count : "—") + "</td>" +
             "<td>" + esc(fmtDay(a.retrieved_at)) + "</td></tr>"
           );
