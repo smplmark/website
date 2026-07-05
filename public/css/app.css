@@ -167,7 +167,10 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .bar-value { font-family: var(--mono); font-size: 13px; color: var(--muted); text-align: right; }
 
 /* ── Benchmark detail ── */
-.detail-head { margin-bottom: 8px; }
+/* Single-column pages (about/sources/terms/privacy/benchmark detail): the heading and body
+   share one centered column narrower than the header's full-width .wrap, so both margins read
+   as equal instead of the content hugging the wrap's left edge. */
+.detail-head { max-width: var(--contentw); margin: 0 auto 8px; }
 .detail-head h1 { font-size: 32px; letter-spacing: -0.02em; margin: 0 0 6px; }
 .detail-head .tagline { color: var(--muted); font-size: 17px; margin: 0 0 10px; }
 .detail-head .byline { font-size: 14px; color: var(--muted); }
@@ -217,13 +220,13 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
-.prose { max-width: var(--contentw); }
+.prose { max-width: var(--contentw); margin: 0 auto; }
 .prose p { margin: 0 0 16px; font-size: 16px; }
 .prose h2 { font-size: 19px; letter-spacing: -0.01em; margin: 28px 0 10px; }
 .prose a { color: var(--accent); }
 .prose a:hover { text-decoration: underline; }
 
-.metrics { max-width: var(--contentw); display: flex; flex-direction: column; gap: 12px; }
+.metrics { max-width: var(--contentw); margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 .metric {
   border: 1px solid var(--border);
   background: var(--panel);
@@ -235,7 +238,7 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .metric .kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; margin-left: 8px; }
 .metric .desc { color: var(--muted); font-size: 14px; margin-top: 6px; }
 
-.publisher { max-width: var(--contentw); border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 22px 24px; }
+.publisher { max-width: var(--contentw); margin: 0 auto; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 22px 24px; }
 .publisher h3 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
 .publisher .since { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
 .publisher p { color: var(--text); margin: 0 0 16px; }
