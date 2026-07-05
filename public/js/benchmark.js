@@ -225,6 +225,11 @@ async function init() {
     return;
   }
 
+  // The server-rendered SEO block (if any) is now superseded by the live interactive render — drop
+  // it so there's no duplicate content. Left in place when load fails, as a readable fallback.
+  const ssr = el("ssr-content");
+  if (ssr) ssr.remove();
+
   const a = benchmark.attributes;
   document.title = a.name + " — smplmark";
 

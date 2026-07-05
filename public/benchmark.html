@@ -37,6 +37,11 @@
         <p class="byline" id="bm-byline"></p>
       </div>
 
+      <!-- Server-side-rendered crawlable content (overview, metrics, targets, methodology). The
+           Worker fills this for search engines; the viewer removes it once it has the live data
+           (see benchmark.js). Empty when the SSR fetch was skipped or failed. -->
+      <div class="prose" id="ssr-content"></div>
+
       <div id="banners"></div>
 
       <div id="tabs-wrap" hidden>

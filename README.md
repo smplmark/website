@@ -20,11 +20,35 @@ timestamp).
 `src/index.ts` is a small shim in front of the static assets:
 
 1. Redirects the apex (`smplmark.org`) to the canonical `www` host.
-2. Serves the data-driven shell (`public/benchmark.html`) for every `/benchmarks/{key}`.
-3. Falls through to static assets for everything else (marketing pages, viewer JS/CSS, images).
+2. Server-side-renders the SEO-critical content into the shell (`public/benchmark.html`) for every
+   `/benchmarks/{key}` (see **SEO / server-side rendering** below).
+3. Serves `/robots.txt` and a dynamic `/sitemap.xml` built from the published-benchmark list.
+4. Falls through to static assets for everything else (marketing pages, viewer JS/CSS, images).
 
 Pages: `/` (home), `/benchmarks` (list), `/benchmarks/{key}` (data-driven benchmark page), `/about`,
-`/terms`, `/privacy`.
+`/sources`, `/terms`, `/privacy`.
+
+## SEO / server-side rendering
+
+The viewer renders every benchmark's content client-side, so a crawler that doesn't run JS would see
+only a "Loading…" shell. To fix that, `serveBenchmarkPage` (in `src/index.ts`, with the pure builders
+in `src/seo.ts`) fetches the benchmark from the app API **at request time** and injects, before
+returning the shell:
+
+- `<title>`, `<meta name="description">`, `<link rel="canonical">` (query-stripped, so deep links all
+  canonicalize to one page), Open Graph + Twitter card tags;
+- **JSON-LD `Dataset` markup** (`schema.org/Dataset`) — name, keywords, publisher, license,
+  `variableMeasured`, and a JSON `distribution` URL — which makes the page eligible for
+  [Google Dataset Search](https://datasetsearch.research.google.com/);
+- a plain-HTML content block (`#ssr-content`: overview, metrics, a sample of targets with the true
+  count, methodology, publisher). The viewer removes this block the instant it has the live data, so
+  JS visitors get the interactive version with no duplication and no cloaking.
+
+It is **resilient**: if the API is slow or unreachable the plain shell is served (200) and the viewer
+hydrates as before; a genuinely-unknown key is a real **404** with `noindex` (no soft-404). Server-side
+the app API needs no CORS or auth (it's a public GET). Found pages carry
+`Cache-Control: public, max-age=300, stale-while-revalidate=600`, so steady traffic and crawlers don't
+hit the API on every request while a freshly published benchmark still appears within ~5 minutes.
 
 ## Reading data from the app API
 
@@ -87,8 +111,10 @@ public/
   benchmarks/index.html     the published-benchmark list
   js/benchmark.js           benchmark detail: fetches the app API, renders chart + attribution badge
   js/benchmark-list.js      the card grid on the home + list pages
+  js/sources.js             the data-driven /sources catalog table
   css/app.css               shared styles
   vendor/uPlot.*            chart library (vendored, no build step)
 scripts/gen-brand.mjs       regenerates the brand PNGs under public/img
-src/index.ts                the routing Worker (apex → www, /benchmarks/{key} shell, static fallthrough)
+src/index.ts                the routing Worker (redirects, benchmark SSR, sitemap/robots, fallthrough)
+src/seo.ts                  pure SEO builders (head tags, JSON-LD, SSR body, sitemap, robots)
 ```
