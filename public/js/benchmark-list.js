@@ -91,7 +91,7 @@ function cardSource(a) {
 // visitors to /benchmarks (the full, filterable browse) for everything else.
 var HOME_RECENT_LIMIT = 50;
 
-// Sort menu: newest (the server default) plus reddit-style popularity windows.
+// Sort menu: newest (most recently published) plus reddit-style popularity windows.
 var SORT_OPTIONS = [
   { value: "", label: "Newest" },
   { value: "views_today", label: "Popular today" },
@@ -259,8 +259,10 @@ async function load() {
   if (filters.category) qs.set("filter[category]", filters.category);
   if (filters.tag) qs.set("filter[tag]", filters.tag);
   if (filters.q) qs.set("filter[search]", filters.q);
-  if (filters.sort) qs.set("sort", "-" + filters.sort);
-  // Home page: cap at the most recent benchmarks (newest-first is the server default).
+  // "Newest" means most recently published — the public site's recency semantic. (Everything
+  // world-visible has a published_at; WITHDRAWN rows keep theirs.)
+  qs.set("sort", "-" + (filters.sort || "published_at"));
+  // Home page: cap at the most recent benchmarks.
   if (!filterable) qs.set("page[size]", String(HOME_RECENT_LIMIT));
   if ([...qs].length) url += "?" + qs.toString();
 
