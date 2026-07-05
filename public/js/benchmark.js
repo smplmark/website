@@ -1043,6 +1043,7 @@ function setupLeaderboard() {
     '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
     '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
     "</div></div>" +
+    '<div class="links"><button type="button" class="btn" id="lb-csv">Download CSV</button> <button type="button" class="btn" id="lb-json">JSON</button></div>' +
     "</div>" +
     '<div id="lb-main"></div>' +
     '<div id="lb-status" class="status"></div>' +
@@ -1082,6 +1083,29 @@ function setupLeaderboard() {
       renderLbMain();
     });
   });
+  el("lb-csv").addEventListener("click", () => downloadLeaderboard("csv"));
+  el("lb-json").addEventListener("click", () => downloadLeaderboard("json"));
+}
+
+// Download the WHOLE current filter (server caps to the target limit) as CSV or JSON. CSV is driven
+// by the Accept header; JSON by ?format=json — both hit the same filtered leaderboard URL.
+async function downloadLeaderboard(ext) {
+  const status = el("lb-status");
+  try {
+    const url = leaderboardUrl({}) + (ext === "json" ? "&format=json" : "");
+    const accept = ext === "csv" ? "text/csv" : "application/json";
+    const res = await fetch(url, { headers: { Accept: accept } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = benchmark.attributes.key + "-leaderboard." + ext;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    status.className = "status error";
+    status.textContent = ext.toUpperCase() + " download failed: " + err.message;
+  }
 }
 
 /** Fetch the current page + total + facets and redraw everything. */
