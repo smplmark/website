@@ -432,3 +432,19 @@ footer.site a.gh svg { display: block; }
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
+
+/* /sources: the external-source catalog table (data-driven from the app API). */
+.source-table-wrap { overflow-x: auto; margin: 8px 0 16px; }
+.source-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.source-table th, .source-table td {
+  text-align: left;
+  padding: 10px 14px 10px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.source-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.source-table td.num, .source-table th.num { text-align: right; }
+.source-table td:first-child { font-weight: 600; min-width: 140px; }
+.source-table td:nth-child(2) { min-width: 220px; }
+.source-table td:nth-child(3), .source-table td:last-child { white-space: nowrap; }
+.source-table .src-host { color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; }
