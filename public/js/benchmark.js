@@ -291,8 +291,11 @@ function renderHead() {
   const a = benchmark.attributes;
   el("bm-name").innerHTML =
     esc(a.name) +
-    (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "") +
-    (a.closed ? ' <span class="pill complete" title="The publisher has marked this benchmark complete — nothing new will be added.">complete</span>' : "");
+    (a.status === "WITHDRAWN"
+      ? ' <span class="pill withdrawn">withdrawn</span>'
+      : !a.closed
+        ? ' <span class="pill live" title="This benchmark is live — the publisher is still adding data.">live</span>'
+        : "");
   el("bm-tagline").textContent = a.description || "";
   const chipsBox = el("bm-chips");
   if (chipsBox) chipsBox.innerHTML = chipsMarkup(a);

@@ -295,11 +295,15 @@ async function load() {
     grid.innerHTML = doc.data
       .map((b) => {
         const a = b.attributes;
-        // Everything a visitor can see is published by definition — only WITHDRAWN warrants a
-        // pill; "complete" marks a closed (finished) dataset.
+        // Everything a visitor can see is published by definition. Most benchmarks are closed
+        // (frozen datasets), so we badge the exception: a "live" pill on ones still accepting data.
+        // WITHDRAWN takes precedence (a withdrawn benchmark is never "live").
         const pill =
-          (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "") +
-          (a.closed ? ' <span class="pill complete">complete</span>' : "");
+          a.status === "WITHDRAWN"
+            ? ' <span class="pill withdrawn">withdrawn</span>'
+            : !a.closed
+              ? ' <span class="pill live">live</span>'
+              : "";
         return `
           <a class="card" href="${esc(withApi("/benchmarks/" + encodeURIComponent(a.key)))}">
             <h3>${esc(a.name)}${pill}</h3>
