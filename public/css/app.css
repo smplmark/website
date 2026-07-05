@@ -357,6 +357,37 @@ footer.site a:hover { color: var(--text); }
 .data-table td { font-family: var(--mono); color: var(--text); }
 .data-table td:first-child { font-family: var(--sans); }
 
+/* ── Leaderboard mode (large CATEGORY benchmarks) ── */
+.lb-controls { align-items: center; gap: 12px; flex-wrap: wrap; }
+.lb-search {
+  flex: 1 1 220px; min-width: 160px; height: var(--control-h, 35px); padding: 0 12px;
+  background: var(--card, transparent); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-size: 14px; font-family: var(--sans);
+}
+.lb-search:focus { outline: none; border-color: var(--accent); }
+.lb-dir { height: var(--control-h, 35px); white-space: nowrap; }
+.lb-facets { align-self: flex-start; }
+.facet { margin-bottom: 16px; }
+.facet-name {
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); margin-bottom: 6px;
+}
+.facet-row {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px;
+  padding: 3px 0; cursor: pointer; font-size: 13px;
+}
+.facet-row input { margin: 0; accent-color: var(--accent); }
+.facet-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.facet-count { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.facet-more { font-size: 12px; color: var(--muted); padding: 2px 0 0 24px; }
+.lb-table td.rank, .lb-table th.rank { text-align: right; width: 3.5em; color: var(--muted); }
+.lb-table td.name-col, .lb-table th.name-col,
+.lb-table td.text-col, .lb-table th.text-col { text-align: left; font-family: var(--sans); }
+.lb-table td.name-col { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+.lb-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; }
+.lb-pager .btn[disabled] { opacity: 0.45; cursor: default; }
+.lb-pageinfo { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 /* "live" — the benchmark is still accepting data (most benchmarks are closed, so we badge the
    exception). A small green dot echoes the live-run banner's still-recording motif. */
 .pill.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }

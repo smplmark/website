@@ -206,6 +206,19 @@ let rangeState = { preset: "all" };
 let preZoomRange = null; // rangeState before the first drag-zoom; restored on double-click reset
 let lastDrawnRange = null; // the filter[created_at] value the drawn chart was fetched with
 
+// Leaderboard mode: a high-cardinality CATEGORY benchmark (e.g. SPEC CPU2017's ~11.8k systems) is
+// browsed through the server-driven leaderboard — sort/search/facets/paging server-side — instead
+// of loading every target into the page. See setupLeaderboard(). Small benchmarks keep the
+// client-side chart/table/rail above.
+const LEADERBOARD_THRESHOLD = 300;
+const LB_PAGE_SIZE = 100;
+let leaderboardMode = false;
+let lbDrawn = false;
+let lbTotal = 0;
+let lbFacets = [];
+let lbRows = [];
+let lbState = { sort: null, desc: true, search: "", facets: {}, page: 1 }; // facets: field → Set(values)
+
 async function init() {
   const crumb = el("crumb-back");
   if (crumb) crumb.href = withApi("/benchmarks");
@@ -243,26 +256,38 @@ async function init() {
   } catch (_) {
     publisher = null;
   }
-  try {
-    const res = await fetchAllPages(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id));
-    targets = res.data;
-    targetsTruncated = res.truncated;
-  } catch (_) {
-    targets = [];
-  }
-  // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing and
-  // the run→target mapping the chart grouping needs. Best-effort.
-  runs = [];
-  try {
-    const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
-    runs = res.data.map((r) => ({ ...r, targetId: r.attributes.target }));
-    runsTruncated = res.truncated;
-  } catch (_) {}
-
   const schema = a.observation_schema || { metrics: [], derived: [] };
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
   chartDecl = schema.chart || inferChart(metricList);
   chartMode = chartDecl ? chartDecl.x_kind || inferKind(chartDecl.x) : "TIME";
+
+  // Probe the target count cheaply (one row) and switch a large CATEGORY benchmark into leaderboard
+  // mode before loading anything else — the eager target/run fetch below is skipped for those.
+  if (chartMode === "CATEGORY") {
+    try {
+      const probe = await fetchJson(leaderboardUrl({ size: 1, total: true }));
+      lbTotal = (probe.meta && probe.meta.pagination && probe.meta.pagination.total) || 0;
+      leaderboardMode = lbTotal > LEADERBOARD_THRESHOLD;
+    } catch (_) {}
+  }
+
+  if (!leaderboardMode) {
+    try {
+      const res = await fetchAllPages(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+      targets = res.data;
+      targetsTruncated = res.truncated;
+    } catch (_) {
+      targets = [];
+    }
+    // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing and
+    // the run→target mapping the chart grouping needs. Best-effort.
+    runs = [];
+    try {
+      const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+      runs = res.data.map((r) => ({ ...r, targetId: r.attributes.target }));
+      runsTruncated = res.truncated;
+    } catch (_) {}
+  }
 
   renderHead();
   renderBanners();
@@ -272,8 +297,11 @@ async function init() {
   // Before setupTabs: an initial #data hash (or a deep link) draws the chart immediately, and
   // that first draw must already see the URL-seeded range/targets/metrics/view/sort.
   readViewParams();
+  // Build the data-panel controls (leaderboard shell or the client chart controls) BEFORE setupTabs,
+  // because an initial #data hash makes setupTabs activate the tab, which draws into that shell.
+  if (leaderboardMode) setupLeaderboard();
+  else setupChartControls();
   setupTabs();
-  setupChartControls();
 
   el("tabs-wrap").hidden = false;
 }
@@ -438,7 +466,13 @@ const TAB_NAMES = ["overview", "data", "methodology", "publisher"];
 function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
-  if (name === "data" && !chartDrawn) drawChart();
+  if (name === "data") {
+    if (leaderboardMode) {
+      if (!lbDrawn) { lbDrawn = true; loadLeaderboard(); }
+    } else if (!chartDrawn) {
+      drawChart();
+    }
+  }
   if (updateHash && location.hash !== "#" + name) location.hash = name;
 }
 function setupTabs() {
@@ -942,6 +976,280 @@ async function downloadObservations(accept, extension) {
     el("chart-status").className = "status error";
     el("chart-status").textContent = extension.toUpperCase() + " download failed: " + err.message;
   }
+}
+
+// ── Leaderboard mode (large CATEGORY benchmarks): server-driven sort / search / facets / paging.
+// Takes over the Data panel entirely; the client-side chart/rail machinery above is untouched. ──
+
+const FACET_LABELS = {
+  vendor: "Vendor", sponsor: "Test sponsor", chips: "Sockets", cores: "Cores", copies: "Copies",
+  threads_per_core: "Threads / core", nodes: "Nodes", ranks: "Ranks", threads: "Threads",
+  jvm: "JVM", os: "OS", database: "Database", currency: "Currency", tpc_status: "Status",
+};
+const FACET_MAX_VALUES = 12; // values shown per facet before "+N more"
+
+function facetLabel(field) {
+  return FACET_LABELS[field] || field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, " ");
+}
+function metricByName(name) {
+  return metricList.find((m) => m.name === name) || null;
+}
+function metricLabel(name) {
+  const m = metricByName(name);
+  return m && m.unit ? m.name + " (" + m.unit + ")" : name;
+}
+function anyLbFilter() {
+  return Object.keys(lbState.facets).length > 0 || lbState.search.trim() !== "";
+}
+function lbSortField() {
+  return lbState.sort || (chartDecl && chartDecl.y) || (metricList[0] && metricList[0].name) || null;
+}
+
+/** Build the leaderboard request URL from current sort/search/facets/page. */
+function leaderboardUrl(opts) {
+  opts = opts || {};
+  const p = new URLSearchParams();
+  const field = lbSortField();
+  if (field) p.set("sort", (lbState.desc ? "-" : "") + field);
+  p.set("page[size]", String(opts.size || LB_PAGE_SIZE));
+  p.set("page[number]", String(opts.page || lbState.page || 1));
+  if (opts.total) p.set("meta[total]", "true");
+  if (lbState.search.trim()) p.set("filter[search]", lbState.search.trim());
+  for (const f of Object.keys(lbState.facets)) {
+    for (const v of lbState.facets[f]) p.append("filter[facet." + f + "]", v);
+  }
+  return API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/leaderboard?" + p.toString();
+}
+
+/** Replace the Data panel with the leaderboard shell and wire its controls. */
+function setupLeaderboard() {
+  lbState.sort = lbSortField();
+  // A ranked table (rank · system · vendor · scores) reads better than bars for thousands of rows,
+  // so leaderboard mode defaults to the table — unless the deep link explicitly asked for bars.
+  const viewParam = searchParams().get("view");
+  chartView = viewParam === "bars" || viewParam === "table" ? viewParam : "table";
+  const panel = document.querySelector('.tab-panel[data-panel="data"]');
+  const options = metricList.map((m) => '<option value="' + esc(m.name) + '">' + esc(metricLabel(m.name)) + "</option>").join("");
+  panel.innerHTML =
+    '<div class="data-layout">' +
+    '<aside class="target-rail lb-facets" id="lb-facets"></aside>' +
+    '<div class="data-main">' +
+    '<div class="controls lb-controls">' +
+    '<input id="lb-search" class="lb-search" type="search" placeholder="Search systems…" autocomplete="off">' +
+    '<div class="field"><label for="lb-sort">Sort</label><select id="lb-sort">' + options + "</select></div>" +
+    '<button type="button" class="btn lb-dir" id="lb-dir">High → low</button>' +
+    '<div class="spacer"></div>' +
+    '<div class="field"><label>View</label><div class="segmented" role="radiogroup" aria-label="View">' +
+    '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
+    '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
+    "</div></div>" +
+    "</div>" +
+    '<div id="lb-main"></div>' +
+    '<div id="lb-status" class="status"></div>' +
+    '<div id="lb-pager" class="lb-pager"></div>' +
+    "</div></div>";
+
+  if (lbState.sort) el("lb-sort").value = lbState.sort;
+  el("lb-sort").addEventListener("change", () => {
+    lbState.sort = el("lb-sort").value;
+    lbState.page = 1;
+    loadLeaderboard();
+  });
+  el("lb-dir").addEventListener("click", () => {
+    lbState.desc = !lbState.desc;
+    el("lb-dir").textContent = lbState.desc ? "High → low" : "Low → high";
+    lbState.page = 1;
+    loadLeaderboard();
+  });
+  let searchTimer = null;
+  el("lb-search").addEventListener("input", () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      lbState.search = el("lb-search").value;
+      lbState.page = 1;
+      loadLeaderboard();
+    }, 300);
+  });
+  panel.querySelectorAll(".seg-option").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.view === chartView) return;
+      chartView = btn.dataset.view;
+      panel.querySelectorAll(".seg-option").forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-checked", String(on));
+      });
+      renderLbMain();
+    });
+  });
+}
+
+/** Fetch the current page + total + facets and redraw everything. */
+async function loadLeaderboard() {
+  const status = el("lb-status");
+  status.className = "status";
+  status.textContent = "Loading…";
+  try {
+    const doc = await fetchJson(leaderboardUrl({ total: true }));
+    lbRows = doc.data || [];
+    lbTotal = (doc.meta && doc.meta.pagination && doc.meta.pagination.total) || lbRows.length;
+    lbFacets = (doc.meta && doc.meta.facets) || [];
+    renderLbFacets();
+    renderLbMain();
+    renderLbPager();
+    status.className = "status";
+    status.textContent = lbStatusLine();
+  } catch (err) {
+    status.className = "status error";
+    status.textContent = "Failed to load leaderboard: " + err.message;
+  }
+}
+
+function lbStatusLine() {
+  if (lbTotal === 0) return "No systems match these filters.";
+  const start = (lbState.page - 1) * LB_PAGE_SIZE + 1;
+  const end = Math.min(lbState.page * LB_PAGE_SIZE, lbTotal);
+  return (
+    lbTotal.toLocaleString() + (anyLbFilter() ? " matching" : "") + " system" + (lbTotal === 1 ? "" : "s") +
+    " · showing " + start.toLocaleString() + "–" + end.toLocaleString() +
+    " · sorted by " + (lbState.sort || "") + (lbState.desc ? " (high→low)" : " (low→high)")
+  );
+}
+
+function renderLbFacets() {
+  const box = el("lb-facets");
+  if (!lbFacets.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  let html =
+    '<div class="rail-head"><span class="rail-title">Filter</span>' +
+    (anyLbFilter() ? '<button type="button" class="rail-all" id="lb-clear">Clear</button>' : "") +
+    "</div>";
+  for (const f of lbFacets) {
+    const active = lbState.facets[f.field] || new Set();
+    html += '<div class="facet"><div class="facet-name">' + esc(facetLabel(f.field)) + "</div>";
+    for (const v of f.values.slice(0, FACET_MAX_VALUES)) {
+      html +=
+        '<label class="facet-row"><input type="checkbox" data-field="' + esc(f.field) + '" data-value="' + esc(v.value) + '"' +
+        (active.has(v.value) ? " checked" : "") + ">" +
+        '<span class="facet-val" title="' + esc(v.value) + '">' + esc(v.value) + "</span>" +
+        '<span class="facet-count">' + v.count.toLocaleString() + "</span></label>";
+    }
+    if (f.values.length > FACET_MAX_VALUES) {
+      html += '<div class="facet-more">+' + (f.values.length - FACET_MAX_VALUES) + (f.truncated ? "+" : "") + " more</div>";
+    }
+    html += "</div>";
+  }
+  box.innerHTML = html;
+  box.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const field = cb.dataset.field;
+      const set = lbState.facets[field] || new Set();
+      if (cb.checked) set.add(cb.dataset.value);
+      else set.delete(cb.dataset.value);
+      if (set.size) lbState.facets[field] = set;
+      else delete lbState.facets[field];
+      lbState.page = 1;
+      loadLeaderboard();
+    });
+  });
+  const clear = el("lb-clear");
+  if (clear) {
+    clear.addEventListener("click", () => {
+      lbState.facets = {};
+      lbState.search = "";
+      if (el("lb-search")) el("lb-search").value = "";
+      lbState.page = 1;
+      loadLeaderboard();
+    });
+  }
+}
+
+function renderLbMain() {
+  const main = el("lb-main");
+  if (!lbRows.length) { main.innerHTML = '<div class="empty">No systems match these filters.</div>'; return; }
+  if (chartView === "bars") renderLbBars(main);
+  else renderLbTable(main);
+}
+
+function renderLbTable(main) {
+  const metricNames = metricList.map((m) => m.name);
+  const startRank = (lbState.page - 1) * LB_PAGE_SIZE;
+  const showVendor = lbRows.some((r) => r.attributes.details && r.attributes.details.vendor);
+  let html =
+    '<div class="table-wrap"><table class="data-table lb-table"><thead><tr><th class="rank">#</th><th class="name-col">System</th>' +
+    (showVendor ? '<th class="text-col">Vendor</th>' : "") +
+    metricNames
+      .map(
+        (n) =>
+          '<th class="sortable" data-metric="' + esc(n) + '">' + esc(metricLabel(n)) +
+          (lbState.sort === n ? (lbState.desc ? " ↓" : " ↑") : "") + "</th>",
+      )
+      .join("") +
+    "</tr></thead><tbody>";
+  lbRows.forEach((r, i) => {
+    const a = r.attributes;
+    const metrics = a.metrics || {};
+    html +=
+      '<tr><td class="rank">' + (startRank + i + 1) + '</td><td class="name-col" title="' + esc(a.name) + '">' + esc(a.name) + "</td>" +
+      (showVendor ? '<td class="text-col">' + esc((a.details && a.details.vendor) || "—") + "</td>" : "") +
+      metricNames.map((n) => "<td>" + esc(fmtCell(metrics[n])) + "</td>").join("") +
+      "</tr>";
+  });
+  html += "</tbody></table></div>";
+  main.innerHTML = html;
+  main.querySelectorAll("th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const m = th.dataset.metric;
+      if (lbState.sort === m) lbState.desc = !lbState.desc;
+      else { lbState.sort = m; lbState.desc = true; }
+      if (el("lb-sort")) el("lb-sort").value = lbState.sort;
+      if (el("lb-dir")) el("lb-dir").textContent = lbState.desc ? "High → low" : "Low → high";
+      lbState.page = 1;
+      loadLeaderboard();
+    });
+  });
+}
+
+function renderLbBars(main) {
+  const yKey = lbSortField();
+  const unit = metricUnit(yKey);
+  const rows = lbRows.map((r) => {
+    const v = (r.attributes.metrics || {})[yKey];
+    return { name: r.attributes.name, value: typeof v === "number" ? v : null };
+  });
+  const max = Math.max(1, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))));
+  main.innerHTML =
+    '<div class="bars">' +
+    rows
+      .map((r, i) => {
+        const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
+        const val = r.value == null ? "—" : fmtCell(r.value) + (unit ? " " + unit : "");
+        return (
+          '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
+          '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
+          '<div class="bar-value">' + esc(val) + "</div></div>"
+        );
+      })
+      .join("") +
+    "</div>";
+}
+
+function renderLbPager() {
+  const pager = el("lb-pager");
+  const pages = Math.max(1, Math.ceil(lbTotal / LB_PAGE_SIZE));
+  if (pages <= 1) { pager.innerHTML = ""; return; }
+  pager.innerHTML =
+    '<button type="button" class="btn" id="lb-prev"' + (lbState.page <= 1 ? " disabled" : "") + ">‹ Prev</button>" +
+    '<span class="lb-pageinfo">Page ' + lbState.page + " of " + pages.toLocaleString() + "</span>" +
+    '<button type="button" class="btn" id="lb-next"' + (lbState.page >= pages ? " disabled" : "") + ">Next ›</button>";
+  const go = (delta) => {
+    lbState.page = Math.min(pages, Math.max(1, lbState.page + delta));
+    loadLeaderboard();
+    const panel = document.querySelector('.tab-panel[data-panel="data"]');
+    if (panel) panel.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  if (el("lb-prev")) el("lb-prev").addEventListener("click", () => go(-1));
+  if (el("lb-next")) el("lb-next").addEventListener("click", () => go(1));
 }
 
 const MAX_RAIL_ROWS = 500;
