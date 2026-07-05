@@ -200,6 +200,11 @@ let chartView = "bars"; // CATEGORY visualization: "bars" | "table"
 let selectedTargetIds = null; // Set of target ids, or null ⇒ all targets
 let metricSelection = []; // checked metric names, in schema order
 let railFilter = "";
+// The time window behind filter[created_at]: a preset ({preset} — "last N as of now") or
+// absolute UTC bounds ({from,to} in ms, either side null ⇒ open). URL from/to seeds the latter.
+let rangeState = { preset: "all" };
+let preZoomRange = null; // rangeState before the first drag-zoom; restored on double-click reset
+let lastDrawnRange = null; // the filter[created_at] value the drawn chart was fetched with
 
 async function init() {
   const crumb = el("crumb-back");
@@ -259,6 +264,9 @@ async function init() {
   renderOverview();
   renderMethodology();
   renderPublisher();
+  // Before setupTabs: an initial #data hash (or a deep link) draws the chart immediately, and
+  // that first draw must already see the URL-seeded range/targets/metrics/view/sort.
+  readViewParams();
   setupTabs();
   setupChartControls();
 
@@ -433,9 +441,181 @@ function setupTabs() {
   });
   const initial = location.hash.slice(1);
   if (TAB_NAMES.includes(initial) && initial !== "overview") activateTab(initial, false);
+  // A deep link that pins the data view but names no tab should land on the chart, not Overview.
+  else if (!TAB_NAMES.includes(initial) && hasViewParams()) activateTab("data", false);
   window.addEventListener("resize", () => {
     if (chart) chart.setSize({ width: el("chart").clientWidth || 900, height: 420 });
   });
+}
+
+// ── Deep links — the query string carries the data view (from/to/range/targets/metrics/view/
+// sort); the hash keeps sole ownership of the tab. Every param is optional and validated
+// against loaded data: a bad value is dropped, never allowed to break rendering. ?api= and any
+// unrecognized params pass through every rewrite untouched. ──
+const VIEW_PARAM_KEYS = ["from", "to", "range", "targets", "metrics", "view", "sort"];
+const DAY_MS = 86400000;
+
+function searchParams() {
+  try {
+    return new URLSearchParams(location.search);
+  } catch (_) {
+    return new URLSearchParams();
+  }
+}
+
+function hasViewParams() {
+  const params = searchParams();
+  return VIEW_PARAM_KEYS.some((k) => params.has(k));
+}
+
+// Accept full ISO-8601 or bare YYYY-MM-DD — from ⇒ midnight UTC, to ⇒ EXCLUSIVE next midnight,
+// so ?from=2026-06-01&to=2026-06-15 covers the 15th. Invalid ⇒ null (dropped).
+function parseDateParam(v, endExclusive) {
+  if (!v) return null;
+  const s = String(v).trim();
+  let ms;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    ms = Date.parse(s + "T00:00:00Z");
+    if (!isNaN(ms) && endExclusive) ms += DAY_MS;
+  } else {
+    ms = Date.parse(s);
+  }
+  return isNaN(ms) ? null : ms;
+}
+
+function isoDay(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getUTCFullYear() + "-" + p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate());
+}
+
+// Serialize a bound: exact-midnight values write back as bare dates (`to` shown inclusive, its
+// stored value stays the exclusive next midnight); drag-zoom windows get the full ISO instant.
+function dateParamValue(ms, endExclusive) {
+  if (ms % DAY_MS === 0) return isoDay(endExclusive ? ms - DAY_MS : ms);
+  return new Date(ms).toISOString();
+}
+
+// Keep the #range select honest: an active from/to window gets a dynamically-added "Custom"
+// option; picking any preset removes it again (via the change listener → syncRangeSelect).
+function syncRangeSelect() {
+  const select = el("range");
+  if (!select) return;
+  const existing = select.querySelector('option[value="custom"]');
+  if (rangeState.preset !== undefined) {
+    if (existing) existing.remove();
+    select.value = rangeState.preset;
+    return;
+  }
+  const fromLabel = rangeState.from == null ? "…" : isoDay(rangeState.from);
+  const toLabel =
+    rangeState.to == null
+      ? "…"
+      : isoDay(rangeState.to % DAY_MS === 0 ? rangeState.to - DAY_MS : rangeState.to);
+  const opt = existing || document.createElement("option");
+  opt.value = "custom";
+  opt.textContent = "Custom (" + fromLabel + " – " + toLabel + ")";
+  if (!existing) select.appendChild(opt);
+  select.value = "custom";
+}
+
+// Seed the view state from the URL. Runs once, after targets/metricList load (keys and names
+// validate against real data) and before anything can draw.
+function readViewParams() {
+  const params = searchParams();
+
+  // from/to (absolute) beat range (preset mirror). Time bounds only mean anything in TIME mode.
+  if (chartMode === "TIME") {
+    const from = parseDateParam(params.get("from"), false);
+    const to = parseDateParam(params.get("to"), true);
+    if (from !== null || to !== null) {
+      rangeState = { from: from, to: to };
+    } else {
+      const preset = params.get("range");
+      if (preset && Object.prototype.hasOwnProperty.call(RANGE_SECONDS, preset)) {
+        rangeState = { preset: preset };
+      }
+    }
+    syncRangeSelect();
+  }
+
+  // targets: comma-separated target KEYS → ids. Unknown keys drop silently; all dropped (or the
+  // list naming every target) means the same as omitted — all targets. A present-but-empty
+  // "targets=" round-trips a none-selected view. (Comma is the delimiter, so a key that itself
+  // contains a comma can't round-trip — keys are meant to be URL-safe identifiers.)
+  const targetsParam = params.get("targets");
+  if (targetsParam !== null) {
+    const idByKey = new Map(targets.map((t) => [t.attributes.key, t.id]));
+    const fragments = targetsParam.split(",").map((s) => s.trim()).filter(Boolean);
+    const ids = new Set();
+    for (const k of fragments) {
+      const id = idByKey.get(k);
+      if (id) ids.add(id);
+    }
+    if (fragments.length === 0) selectedTargetIds = new Set();
+    else if (ids.size && ids.size < targets.length) selectedTargetIds = ids;
+  }
+
+  // metrics: validated against the schema, normalized to schema order (the picker's rule).
+  const metricsParam = params.get("metrics");
+  if (metricsParam) {
+    const wanted = new Set(metricsParam.split(",").map((s) => s.trim()));
+    const picked = metricList.map((m) => m.name).filter((n) => wanted.has(n));
+    if (picked.length) metricSelection = picked;
+  }
+
+  const view = params.get("view");
+  if (view === "bars" || view === "table") chartView = view;
+
+  // sort: JSON:API style — "-metric" desc, "metric" asc; must name a declared metric.
+  const sort = params.get("sort");
+  if (sort) {
+    const desc = sort.charAt(0) === "-";
+    const name = desc ? sort.slice(1) : sort;
+    if (metricList.some((m) => m.name === name)) tableSort = { key: name, desc: desc };
+  }
+}
+
+// Single writer for the deep-link params: rewrite only our own keys, keep everything else
+// (notably ?api=), re-append the tab hash. Defaults serialize as absence.
+let syncViewTimer = null;
+function syncViewParams() {
+  clearTimeout(syncViewTimer);
+  const params = searchParams();
+  for (const k of VIEW_PARAM_KEYS) params.delete(k);
+
+  if (chartMode === "TIME") {
+    if (rangeState.preset !== undefined) {
+      if (rangeState.preset !== "all") params.set("range", rangeState.preset);
+    } else {
+      if (rangeState.from != null) params.set("from", dateParamValue(rangeState.from, false));
+      if (rangeState.to != null) params.set("to", dateParamValue(rangeState.to, true));
+    }
+  }
+
+  if (selectedTargetIds !== null) {
+    // Empty selection serializes as an explicit "targets=" — absence means all targets.
+    const keys = targets.filter((t) => selectedTargetIds.has(t.id)).map((t) => t.attributes.key);
+    params.set("targets", keys.join(","));
+  }
+
+  if (metricSelection.length && metricSelection.join(",") !== defaultMetricSelection().join(",")) {
+    params.set("metrics", metricSelection.join(","));
+  }
+
+  if (chartMode === "CATEGORY" && chartView === "table") {
+    params.set("view", "table");
+    if (tableSort.key) params.set("sort", (tableSort.desc ? "-" : "") + tableSort.key);
+  }
+
+  const qs = params.toString();
+  history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+}
+
+// Live drag-zoom fires per gesture; coalesce the URL rewrites.
+function scheduleSyncViewParams() {
+  clearTimeout(syncViewTimer);
+  syncViewTimer = setTimeout(syncViewParams, 250);
 }
 
 // ── Chart ──
@@ -448,10 +628,19 @@ function currentY() {
   return chartDecl ? chartDecl.y : metricList.length ? metricList[0].name : null;
 }
 function currentRange() {
-  const secs = RANGE_SECONDS[el("range") ? el("range").value : "all"];
-  if (!secs) return null; // all time → no filter
-  const now = Date.now();
-  return "[" + new Date(now - secs * 1000).toISOString() + "," + new Date(now).toISOString() + ")";
+  // The half-open "[iso,iso)" interval for filter[created_at], derived from rangeState — the
+  // observation cache key and the download scope follow along for free.
+  if (rangeState.preset !== undefined) {
+    const secs = RANGE_SECONDS[rangeState.preset];
+    if (!secs) return null; // all time → no filter
+    const now = Date.now();
+    return "[" + new Date(now - secs * 1000).toISOString() + "," + new Date(now).toISOString() + ")";
+  }
+  const from = rangeState.from != null ? new Date(rangeState.from).toISOString() : "";
+  const to = rangeState.to != null ? new Date(rangeState.to).toISOString() : "";
+  if (!from && !to) return null;
+  // The API's range grammar spells an open bound "*" — an empty token is a 400.
+  return "[" + (from || "*") + "," + (to || "*") + ")";
 }
 
 function observationsUrl(scopeParam, scopeId, range) {
@@ -549,8 +738,39 @@ function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
       Object.assign({ label: yKey + (unit ? " (" + unit + ")" : ""), labelSize: 34 }, AXIS),
     ],
   };
+  if (timeX) {
+    // Drag-zoom → URL: setSelect fires on user drag only (uPlot's internal hide passes
+    // fireHooks=false), so mirroring the window here can't feed back into a redraw. uPlot's
+    // default zoom still applies — no refetch while zooming live.
+    opts.hooks = {
+      setSelect: [
+        (u) => {
+          if (!u.select || u.select.width <= 0) return;
+          if (preZoomRange === null) preZoomRange = rangeState;
+          rangeState = {
+            from: Math.round(u.posToVal(u.select.left, "x") * 1000),
+            to: Math.round(u.posToVal(u.select.left + u.select.width, "x") * 1000),
+          };
+          syncRangeSelect();
+          scheduleSyncViewParams();
+        },
+      ],
+    };
+  }
   destroyChart();
   chart = new uPlot(opts, data, el("chart"));
+  if (timeX) {
+    // uPlot's own dblclick listener (bound first) resets the zoom; ours restores the URL state.
+    chart.over.addEventListener("dblclick", () => {
+      if (preZoomRange === null) return;
+      rangeState = preZoomRange;
+      preZoomRange = null;
+      syncRangeSelect();
+      // If anything redrew while zoomed, the chart holds only the zoom window's data — refetch.
+      if (currentRange() !== lastDrawnRange) drawChart();
+      else scheduleSyncViewParams();
+    });
+  }
 }
 
 function renderBars(seriesTargets, perTargetPoints, yKey) {
@@ -638,6 +858,7 @@ function renderTable(seriesTargets, byTarget) {
     th.addEventListener("click", () => {
       const metric = th.dataset.metric;
       tableSort = { key: metric, desc: tableSort.key === metric ? !tableSort.desc : true };
+      syncViewParams(); // re-render below skips drawChart, so the URL syncs here
       renderTable(seriesTargets, byTarget);
     });
   });
@@ -648,8 +869,10 @@ const MAX_SERIES = 12;
 
 async function drawChart() {
   chartDrawn = true;
+  syncViewParams(); // every control change funnels through here — keep the URL shareable
   const yKey = currentY();
   const range = chartMode === "TIME" ? currentRange() : null;
+  lastDrawnRange = range;
   if (!yKey) {
     el("chart-status").textContent = "This benchmark has no numeric metric to plot.";
     return;
@@ -816,7 +1039,7 @@ function setupMetricControl() {
     metricSelection = metricList.map((m) => m.name);
     return;
   }
-  metricSelection = defaultMetricSelection();
+  if (!metricSelection.length) metricSelection = defaultMetricSelection(); // URL may have seeded it
   const field = el("metric-field");
   field.hidden = false;
   const box = el("metric-dropdown");
@@ -886,8 +1109,10 @@ function setupChartControls() {
     field.innerHTML =
       "<label>View</label>" +
       '<div class="segmented" role="radiogroup" aria-label="View">' +
-      '<button type="button" class="seg-option active" data-view="bars" role="radio" aria-checked="true">Bars</button>' +
-      '<button type="button" class="seg-option" data-view="table" role="radio" aria-checked="false">Table</button>' +
+      '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") +
+      '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
+      '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") +
+      '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
       "</div>";
     const metricField = el("metric-field");
     metricField.parentElement.insertBefore(field, metricField);
@@ -906,7 +1131,16 @@ function setupChartControls() {
     });
   }
 
-  if (el("range")) el("range").addEventListener("change", drawChart);
+  if (el("range")) {
+    el("range").addEventListener("change", () => {
+      const v = el("range").value;
+      if (v === "custom") return; // the Custom option mirrors a from/to window; it isn't an action
+      rangeState = { preset: v };
+      preZoomRange = null;
+      syncRangeSelect(); // drops the Custom option now that a preset owns the window
+      drawChart();
+    });
+  }
   el("csv").addEventListener("click", () => downloadObservations("text/csv", "csv"));
   const jsonEl = el("json");
   jsonEl.addEventListener("click", (e) => {
