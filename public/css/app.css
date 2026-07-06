@@ -496,6 +496,53 @@ footer.site a.gh svg { display: block; }
 .share-item:hover { background: var(--panel-2); color: var(--text); text-decoration: none; }
 .share-sep { height: 1px; background: var(--border); margin: 6px 4px; }
 
+/* ── Embed mode (?embed=1): a fixed 1200×630 branded frame with only the chart/table, for the
+   server-side image generator (Browser Rendering screenshots it). ── */
+body.embed { width: 1200px; height: 630px; overflow: hidden; background: var(--bg); }
+body.embed header.site,
+body.embed footer.site,
+body.embed .crumbs,
+body.embed #banners,
+body.embed #ssr-content,
+body.embed .detail-head,
+body.embed .tabs,
+body.embed #load-status,
+body.embed .tab-panel:not([data-panel="data"]),
+body.embed .target-rail,
+body.embed .lb-facets,
+body.embed .controls,
+body.embed .lb-controls,
+body.embed .lb-pager,
+body.embed #lb-status,
+body.embed #chart-status,
+body.embed .u-legend { display: none !important; }
+body.embed main { padding: 0; }
+body.embed .wrap { max-width: none; width: 1200px; height: 630px; padding: 0; position: relative; }
+body.embed #tabs-wrap { height: 630px; padding: 60px 34px 46px; }
+body.embed .tab-panel[data-panel="data"] { height: 100%; }
+body.embed .data-layout { display: block; height: 100%; }
+body.embed .data-main { height: 100%; display: flex; flex-direction: column; }
+body.embed .chart-panel { flex: 1; min-height: 0; }
+body.embed #chart, body.embed #lb-main { height: 100%; }
+body.embed #lb-main .table-wrap, body.embed #chart .table-wrap { overflow: hidden; }
+body.embed .bars { gap: 8px; }
+
+.embed-title {
+  position: absolute; top: 0; left: 0; right: 0; height: 60px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 0 34px; border-bottom: 1px solid var(--border);
+}
+.embed-name { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.embed-brand { height: 22px; width: auto; opacity: 0.95; flex: none; }
+.embed-caption {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 46px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 0 34px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted);
+}
+.embed-caption .embed-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.embed-caption .embed-url { font-family: var(--mono); flex: none; }
+
 /* /sources: the external-source catalog table (data-driven from the app API). */
 .source-table-wrap { overflow-x: auto; margin: 8px 0 16px; }
 .source-table { width: 100%; border-collapse: collapse; font-size: 14px; }

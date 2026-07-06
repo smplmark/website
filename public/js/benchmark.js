@@ -218,6 +218,57 @@ let rangeState = { preset: "all" };
 let preZoomRange = null; // rangeState before the first drag-zoom; restored on double-click reset
 let lastDrawnRange = null; // the filter[created_at] value the drawn chart was fetched with
 
+// Embed mode (?embed=1): render ONLY the chart/table at a fixed size, no chrome, for the server-side
+// image generator (Browser Rendering screenshots this page — see the /embed/{key}.png Worker route).
+// Signals window.__EMBED_READY once the data has drawn so the screenshotter knows when to capture.
+const embedMode = (() => {
+  try { return new URLSearchParams(location.search).get("embed") === "1"; } catch (_) { return false; }
+})();
+const EMBED_ROWS = 12; // top-N bars/rows shown in an image (a table/bars image can't scroll)
+
+function markEmbedReady() {
+  window.__EMBED_READY = true;
+  document.body.setAttribute("data-embed-ready", "1");
+}
+
+// A short caption line for an embed image: source · primary metric · (date range, for TIME).
+function embedSummary(a) {
+  const parts = [];
+  const pa = a.published_as;
+  const src = pa && (pa.source_name || pa.name || pa.display_name);
+  if (src) parts.push(src);
+  const y = (chartDecl && chartDecl.y) || (metricList[0] && metricList[0].name);
+  if (y) parts.push(y);
+  if (chartMode === "TIME" && rangeState.from != null && rangeState.to != null) {
+    parts.push(fmtDate(new Date(rangeState.from).toISOString()) + " – " + fmtDate(new Date(rangeState.to).toISOString()));
+  }
+  return parts.join(" · ");
+}
+
+// Wrap the (chrome-stripped) data panel in a branded title bar + caption so the image is a
+// self-contained, citable graphic: benchmark name + smplmark wordmark on top, source/metric/range
+// and the canonical URL along the bottom.
+function renderEmbedChrome() {
+  document.body.classList.add("embed");
+  const a = benchmark.attributes;
+  const wrap = document.querySelector("main .wrap");
+
+  const title = document.createElement("div");
+  title.className = "embed-title";
+  title.innerHTML =
+    '<span class="embed-name">' + esc(a.name) + "</span>" +
+    '<img class="embed-brand" src="/img/logo-dark.png" alt="smplmark" height="22" />';
+
+  const caption = document.createElement("div");
+  caption.className = "embed-caption";
+  caption.innerHTML =
+    '<span class="embed-summary">' + esc(embedSummary(a)) + "</span>" +
+    '<span class="embed-url">smplmark.org/benchmarks/' + esc(a.key) + "</span>";
+
+  wrap.insertBefore(title, wrap.firstChild);
+  wrap.appendChild(caption);
+}
+
 // Leaderboard mode: a high-cardinality CATEGORY benchmark (e.g. SPEC CPU2017's ~11.8k systems) is
 // browsed through the server-driven leaderboard — sort/search/facets/paging server-side — instead
 // of loading every target into the page. See setupLeaderboard(). Small benchmarks keep the
@@ -258,10 +309,13 @@ async function init() {
   const a = benchmark.attributes;
   document.title = a.name + " — smplmark";
 
-  // Popularity beacon: fire-and-forget, once per page load. Failure is invisible by design.
-  fetch(API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/actions/view", {
-    method: "POST",
-  }).catch(() => {});
+  // Popularity beacon: fire-and-forget, once per page load. Skipped for embeds — a server-side
+  // image render isn't a human view. Failure is invisible by design.
+  if (!embedMode) {
+    fetch(API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/actions/view", {
+      method: "POST",
+    }).catch(() => {});
+  }
 
   try {
     publisher = (await fetchJson(API + "/api/v1/accounts/" + encodeURIComponent(a.account))).data;
@@ -299,6 +353,24 @@ async function init() {
       runs = res.data.map((r) => ({ ...r, targetId: r.attributes.target }));
       runsTruncated = res.truncated;
     } catch (_) {}
+  }
+
+  // Embed mode: render only the data panel (branded), await the draw, and signal ready for the
+  // screenshotter — no tabs, no chrome, no other panels.
+  if (embedMode) {
+    readViewParams();
+    if (leaderboardMode) setupLeaderboard();
+    else setupChartControls();
+    renderEmbedChrome();
+    // The data panel must be visible (not display:none) so uPlot can measure it and draw.
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === "data"));
+    el("tabs-wrap").hidden = false;
+    try {
+      if (leaderboardMode) { lbDrawn = true; await loadLeaderboard(); }
+      else { chartDrawn = true; await drawChart(); }
+    } catch (_) {}
+    markEmbedReady();
+    return;
   }
 
   renderHead();
@@ -847,7 +919,7 @@ function renderBars(seriesTargets, perTargetPoints, yKey) {
   const unit = metricUnit(yKey);
   el("chart").innerHTML =
     '<div class="bars">' +
-    rows
+    (embedMode ? rows.slice(0, EMBED_ROWS) : rows)
       .map((r, i) => {
         const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
         const val = r.value == null ? "—" : r.value.toFixed(1) + (unit ? " " + unit : "");
@@ -903,7 +975,7 @@ function renderTable(seriesTargets, byTarget) {
       )
       .join("") +
     "</tr></thead><tbody>" +
-    rows
+    (embedMode ? rows.slice(0, EMBED_ROWS) : rows)
       .map(
         (r) =>
           '<tr><td title="' + esc(r.name) + '">' + esc(r.name) + "</td>" +
@@ -1295,7 +1367,8 @@ async function loadLeaderboard() {
   status.className = "status";
   status.textContent = "Loading…";
   try {
-    const doc = await fetchJson(leaderboardUrl({ total: true }));
+    // An image can't scroll, so an embed fetches just the top rows.
+    const doc = await fetchJson(leaderboardUrl({ total: true, size: embedMode ? EMBED_ROWS : undefined }));
     lbRows = doc.data || [];
     lbTotal = (doc.meta && doc.meta.pagination && doc.meta.pagination.total) || lbRows.length;
     lbFacets = (doc.meta && doc.meta.facets) || [];
