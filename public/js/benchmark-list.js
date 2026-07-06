@@ -319,11 +319,7 @@ async function load() {
             <p>${esc(a.description || "")}</p>
             ${cardChips(a)}
             ${cardSource(a)}
-            <div class="meta">${esc(metricNames(a.observation_schema))}${
-              typeof a.views === "number" && a.views > 0
-                ? " · " + a.views.toLocaleString() + (a.views === 1 ? " view" : " views")
-                : ""
-            }</div>
+            <div class="meta">${esc(metricNames(a.observation_schema))}</div>
           </a>`;
       })
       .join("");
