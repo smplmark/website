@@ -272,7 +272,8 @@ function renderEmbedChrome() {
   title.className = "embed-title";
   title.innerHTML =
     '<span class="embed-name">' + esc(a.name) + "</span>" +
-    '<img class="embed-brand" src="/img/logo-dark.png" alt="smplmark" height="22" />';
+    // The embed frame is pinned to the light palette, so use the dark-ink logo (logo-light.png).
+    '<img class="embed-brand" src="/img/logo-light.png" alt="smplmark" height="22" />';
 
   const caption = document.createElement("div");
   caption.className = "embed-caption";

@@ -3,7 +3,8 @@
 // the canonical params, the R2 object key, the page URL, and request validity, all offline-testable.
 
 // Bump when the embed visual changes so old cached PNGs aren't served under the new template.
-export const EMBED_TEMPLATE_VERSION = 1;
+// v2: pinned light palette + light-background logo (was rendering the near-white logo on a light bg).
+export const EMBED_TEMPLATE_VERSION = 2;
 
 export const EMBED_WIDTH = 1200;
 export const EMBED_HEIGHT = 630;
