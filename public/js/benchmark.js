@@ -519,7 +519,11 @@ function searchParams() {
 
 function hasViewParams() {
   const params = searchParams();
-  return VIEW_PARAM_KEYS.some((k) => params.has(k));
+  if (VIEW_PARAM_KEYS.some((k) => params.has(k))) return true;
+  // Leaderboard-mode params (large CATEGORY benchmarks) also mean "land on the Data tab".
+  if (params.has("q") || params.has("page")) return true;
+  for (const k of params.keys()) if (k.startsWith("facet.")) return true;
+  return false;
 }
 
 // Accept full ISO-8601 or bare YYYY-MM-DD — from ⇒ midnight UTC, to ⇒ EXCLUSIVE next midnight,
@@ -1136,6 +1140,61 @@ function leaderboardUrl(opts) {
   return API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/leaderboard?" + p.toString();
 }
 
+// Leaderboard deep-linking: mirror lbState (view / sort / search / facets / page) into the URL so
+// "Copy link" reproduces the exact filtered view, just as the chart mode does for small benchmarks.
+// Leaderboard and chart mode never coexist for one benchmark, so `view`/`sort` are unambiguous.
+const LB_PARAM_KEYS = ["view", "sort", "q", "page"]; // plus facet.<field> handled dynamically
+
+function lbDefaultField() {
+  return (chartDecl && chartDecl.y) || (metricList[0] && metricList[0].name) || null;
+}
+
+// State → URL. Serialize only departures from the default view (table, y-metric high→low, no
+// filters), so a pristine leaderboard has a clean URL. Preserves the hash + ?api= + anything else.
+function syncLbParams() {
+  const params = searchParams();
+  for (const k of [...params.keys()]) {
+    if (LB_PARAM_KEYS.includes(k) || k.startsWith("facet.")) params.delete(k);
+  }
+  if (chartView === "bars") params.set("view", "bars"); // table is the leaderboard default
+  const field = lbSortField();
+  if (field && (field !== lbDefaultField() || !lbState.desc)) {
+    params.set("sort", (lbState.desc ? "-" : "") + field);
+  }
+  if (lbState.search.trim()) params.set("q", lbState.search.trim());
+  for (const f of Object.keys(lbState.facets)) {
+    const vals = [...lbState.facets[f]];
+    if (vals.length) params.set("facet." + f, vals.join(","));
+  }
+  if (lbState.page > 1) params.set("page", String(lbState.page));
+  const qs = params.toString();
+  history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+}
+
+// URL → state. Runs once before the first load. Sort is validated against real metrics; facet
+// values pass through (the server ignores unknown facets — we can't know them until data loads).
+function readLbParams() {
+  const params = searchParams();
+  const sortParam = params.get("sort");
+  if (sortParam) {
+    const desc = sortParam.charAt(0) === "-";
+    const name = desc ? sortParam.slice(1) : sortParam;
+    if (metricList.some((m) => m.name === name)) { lbState.sort = name; lbState.desc = desc; }
+  }
+  const q = params.get("q");
+  if (q) lbState.search = q;
+  const facets = {};
+  for (const [k, v] of params) {
+    if (k.startsWith("facet.") && v) {
+      const set = new Set(v.split(",").map((s) => s.trim()).filter(Boolean));
+      if (set.size) facets[k.slice(6)] = set; // "facet.".length === 6
+    }
+  }
+  if (Object.keys(facets).length) lbState.facets = facets;
+  const page = parseInt(params.get("page") || "", 10);
+  if (Number.isInteger(page) && page > 1) lbState.page = page;
+}
+
 /** Replace the Data panel with the leaderboard shell and wire its controls. */
 function setupLeaderboard() {
   lbState.sort = lbSortField();
@@ -1143,6 +1202,7 @@ function setupLeaderboard() {
   // so leaderboard mode defaults to the table — unless the deep link explicitly asked for bars.
   const viewParam = searchParams().get("view");
   chartView = viewParam === "bars" || viewParam === "table" ? viewParam : "table";
+  readLbParams(); // seed sort / search / facets / page from the URL, overriding the defaults
   const panel = document.querySelector('.tab-panel[data-panel="data"]');
   const options = metricList.map((m) => '<option value="' + esc(m.name) + '">' + esc(metricLabel(m.name)) + "</option>").join("");
   panel.innerHTML =
@@ -1166,6 +1226,8 @@ function setupLeaderboard() {
     "</div></div>";
 
   if (lbState.sort) el("lb-sort").value = lbState.sort;
+  el("lb-dir").textContent = lbState.desc ? "High → low" : "Low → high";
+  el("lb-search").value = lbState.search;
   el("lb-sort").addEventListener("change", () => {
     lbState.sort = el("lb-sort").value;
     lbState.page = 1;
@@ -1195,6 +1257,7 @@ function setupLeaderboard() {
         b.classList.toggle("active", on);
         b.setAttribute("aria-checked", String(on));
       });
+      syncLbParams(); // the view toggle doesn't reload, so sync the URL here
       renderLbMain();
     });
   });
@@ -1227,6 +1290,7 @@ async function downloadLeaderboard(ext) {
 
 /** Fetch the current page + total + facets and redraw everything. */
 async function loadLeaderboard() {
+  syncLbParams(); // every data-affecting change funnels through here — keep the URL shareable
   const status = el("lb-status");
   status.className = "status";
   status.textContent = "Loading…";
