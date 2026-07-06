@@ -478,6 +478,24 @@ footer.site a.gh svg { display: block; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
+/* ── Share menu (benchmark Data tab) ── */
+.share { position: relative; display: inline-block; }
+.share-btn { display: inline-flex; align-items: center; gap: 6px; height: var(--control-h); }
+.share-btn svg { opacity: 0.7; }
+.share-menu {
+  position: absolute; z-index: 20; top: calc(var(--control-h) + 6px); right: 0; min-width: 200px;
+  padding: 6px; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.share-menu[hidden] { display: none; }
+.share-item {
+  display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px;
+  background: none; border: none; color: var(--text); font: inherit; font-size: 14px; cursor: pointer;
+}
+.share-item:hover { background: var(--panel-2); color: var(--text); text-decoration: none; }
+.share-sep { height: 1px; background: var(--border); margin: 6px 4px; }
+
 /* /sources: the external-source catalog table (data-driven from the app API). */
 .source-table-wrap { overflow-x: auto; margin: 8px 0 16px; }
 .source-table { width: 100%; border-collapse: collapse; font-size: 14px; }

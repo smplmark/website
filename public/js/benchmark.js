@@ -143,6 +143,18 @@ function withApi(path) {
 }
 const API = apiBase();
 
+// The canonical URL to share/cite: the current address (which the deep-link params keep in sync
+// with the on-screen view) minus the dev-only ?api= override, so a shared link is never local.
+function shareUrl() {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.delete("api");
+    return u.toString();
+  } catch (_) {
+    return location.href;
+  }
+}
+
 async function errorDetail(res) {
   try {
     const doc = await res.json();
@@ -978,6 +990,109 @@ async function downloadObservations(accept, extension) {
   }
 }
 
+// ── Share menu ──
+// One button that answers "what do you want to do with this data?": copy the shareable link,
+// post to a social network (plain intent URLs — no SDKs, no tracking, matching our privacy stance),
+// email it, or download the current scope as CSV/JSON. The link always reflects the on-screen view
+// because the deep-link params keep the URL in sync. Rendered into both the chart-mode and
+// leaderboard-mode control bars; only one exists at a time (leaderboard replaces the panel).
+
+function shareMenuHtml() {
+  return (
+    '<div class="share">' +
+    '<button type="button" class="btn share-btn" aria-haspopup="true" aria-expanded="false">Share' +
+    '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+    "</button>" +
+    '<div class="share-menu" hidden role="menu">' +
+    '<button type="button" class="share-item" data-act="copy" role="menuitem">Copy link</button>' +
+    '<a class="share-item" data-act="x" role="menuitem" target="_blank" rel="noopener">Share on X</a>' +
+    '<a class="share-item" data-act="linkedin" role="menuitem" target="_blank" rel="noopener">Share on LinkedIn</a>' +
+    '<a class="share-item" data-act="facebook" role="menuitem" target="_blank" rel="noopener">Share on Facebook</a>' +
+    '<a class="share-item" data-act="email" role="menuitem">Email</a>' +
+    '<div class="share-sep" role="separator"></div>' +
+    '<button type="button" class="share-item" data-act="csv" role="menuitem">Download CSV</button>' +
+    '<button type="button" class="share-item" data-act="json" role="menuitem">Download JSON</button>' +
+    "</div></div>"
+  );
+}
+
+// Wire a rendered share control. `downloads` supplies the mode-specific CSV/JSON handlers.
+function wireShareMenu(root, downloads) {
+  const wrap = root.querySelector(".share");
+  const btn = wrap.querySelector(".share-btn");
+  const menu = wrap.querySelector(".share-menu");
+  const copyItem = wrap.querySelector('[data-act="copy"]');
+
+  // Social hrefs are refreshed every open, since the shareable URL changes as controls change.
+  function refreshLinks() {
+    const url = shareUrl();
+    const title = (benchmark && benchmark.attributes.name) || "smplmark benchmark";
+    const encUrl = encodeURIComponent(url);
+    const encTitle = encodeURIComponent(title);
+    wrap.querySelector('[data-act="x"]').href =
+      "https://twitter.com/intent/tweet?url=" + encUrl + "&text=" + encTitle;
+    wrap.querySelector('[data-act="linkedin"]').href =
+      "https://www.linkedin.com/sharing/share-offsite/?url=" + encUrl;
+    wrap.querySelector('[data-act="facebook"]').href =
+      "https://www.facebook.com/sharer/sharer.php?u=" + encUrl;
+    wrap.querySelector('[data-act="email"]').href =
+      "mailto:?subject=" + encTitle + "&body=" + encodeURIComponent(title + "\n\n" + url);
+  }
+
+  let onDoc = null;
+  function close() {
+    menu.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    if (onDoc) {
+      document.removeEventListener("click", onDoc);
+      document.removeEventListener("keydown", onKey);
+      onDoc = null;
+    }
+  }
+  function onKey(e) {
+    if (e.key === "Escape") { close(); btn.focus(); }
+  }
+  function open() {
+    refreshLinks();
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    onDoc = (e) => { if (!wrap.contains(e.target)) close(); };
+    // Defer so the opening click doesn't immediately close it.
+    setTimeout(() => {
+      if (!menu.hidden) {
+        document.addEventListener("click", onDoc);
+        document.addEventListener("keydown", onKey);
+      }
+    }, 0);
+  }
+  btn.addEventListener("click", () => (menu.hidden ? open() : close()));
+
+  copyItem.addEventListener("click", async () => {
+    const url = shareUrl();
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch (_) {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (_) {}
+      document.body.removeChild(ta);
+    }
+    const prev = copyItem.textContent;
+    copyItem.textContent = "Copied!";
+    setTimeout(() => { copyItem.textContent = prev; }, 1200);
+  });
+
+  // Social/email anchors navigate themselves (hrefs set on open); just close the menu after.
+  wrap.querySelectorAll('a.share-item').forEach((a) => a.addEventListener("click", close));
+
+  wrap.querySelector('[data-act="csv"]').addEventListener("click", () => { close(); downloads.csv(); });
+  wrap.querySelector('[data-act="json"]').addEventListener("click", () => { close(); downloads.json(); });
+}
+
 // ── Leaderboard mode (large CATEGORY benchmarks): server-driven sort / search / facets / paging.
 // Takes over the Data panel entirely; the client-side chart/rail machinery above is untouched. ──
 
@@ -1043,7 +1158,7 @@ function setupLeaderboard() {
     '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
     '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
     "</div></div>" +
-    '<div class="links"><button type="button" class="btn" id="lb-csv">Download CSV</button> <button type="button" class="btn" id="lb-json">JSON</button></div>' +
+    '<div class="links" id="lb-actions">' + shareMenuHtml() + "</div>" +
     "</div>" +
     '<div id="lb-main"></div>' +
     '<div id="lb-status" class="status"></div>' +
@@ -1083,8 +1198,10 @@ function setupLeaderboard() {
       renderLbMain();
     });
   });
-  el("lb-csv").addEventListener("click", () => downloadLeaderboard("csv"));
-  el("lb-json").addEventListener("click", () => downloadLeaderboard("json"));
+  wireShareMenu(el("lb-actions"), {
+    csv: () => downloadLeaderboard("csv"),
+    json: () => downloadLeaderboard("json"),
+  });
 }
 
 // Download the WHOLE current filter (server caps to the target limit) as CSV or JSON. CSV is driven
@@ -1481,11 +1598,11 @@ function setupChartControls() {
       drawChart();
     });
   }
-  el("csv").addEventListener("click", () => downloadObservations("text/csv", "csv"));
-  const jsonEl = el("json");
-  jsonEl.addEventListener("click", (e) => {
-    e.preventDefault();
-    downloadObservations("application/vnd.api+json", "json");
+  const actions = el("chart-actions");
+  actions.innerHTML = shareMenuHtml();
+  wireShareMenu(actions, {
+    csv: () => downloadObservations("text/csv", "csv"),
+    json: () => downloadObservations("application/vnd.api+json", "json"),
   });
 }
 
