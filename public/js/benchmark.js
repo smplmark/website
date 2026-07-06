@@ -155,6 +155,21 @@ function shareUrl() {
   }
 }
 
+// The shareable PNG for the current view: /embed/{key}.png carrying the same view params (no hash,
+// no ?api=/embed). Served by the Worker (generated once, cached). For a TIME benchmark the endpoint
+// needs a bounded from/to; for everything else any view works.
+function embedImageUrl() {
+  try {
+    const u = new URL(shareUrl());
+    u.searchParams.delete("embed");
+    u.hash = "";
+    const qs = u.searchParams.toString();
+    return u.origin + "/embed/" + encodeURIComponent(keyFromPath()) + ".png" + (qs ? "?" + qs : "");
+  } catch (_) {
+    return "";
+  }
+}
+
 async function errorDetail(res) {
   try {
     const doc = await res.json();
@@ -1081,6 +1096,7 @@ function shareMenuHtml() {
     "</button>" +
     '<div class="share-menu" hidden role="menu">' +
     '<button type="button" class="share-item" data-act="copy" role="menuitem">Copy link</button>' +
+    '<button type="button" class="share-item" data-act="copy-image" role="menuitem">Copy image link</button>' +
     '<a class="share-item" data-act="x" role="menuitem" target="_blank" rel="noopener">Share on X</a>' +
     '<a class="share-item" data-act="linkedin" role="menuitem" target="_blank" rel="noopener">Share on LinkedIn</a>' +
     '<a class="share-item" data-act="facebook" role="menuitem" target="_blank" rel="noopener">Share on Facebook</a>' +
@@ -1143,13 +1159,12 @@ function wireShareMenu(root, downloads) {
   }
   btn.addEventListener("click", () => (menu.hidden ? open() : close()));
 
-  copyItem.addEventListener("click", async () => {
-    const url = shareUrl();
+  async function copyToClipboard(text, item) {
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(text);
     } catch (_) {
       const ta = document.createElement("textarea");
-      ta.value = url;
+      ta.value = text;
       ta.style.position = "fixed";
       ta.style.opacity = "0";
       document.body.appendChild(ta);
@@ -1157,10 +1172,13 @@ function wireShareMenu(root, downloads) {
       try { document.execCommand("copy"); } catch (_) {}
       document.body.removeChild(ta);
     }
-    const prev = copyItem.textContent;
-    copyItem.textContent = "Copied!";
-    setTimeout(() => { copyItem.textContent = prev; }, 1200);
-  });
+    const prev = item.textContent;
+    item.textContent = "Copied!";
+    setTimeout(() => { item.textContent = prev; }, 1200);
+  }
+  copyItem.addEventListener("click", () => copyToClipboard(shareUrl(), copyItem));
+  const copyImageItem = wrap.querySelector('[data-act="copy-image"]');
+  copyImageItem.addEventListener("click", () => copyToClipboard(embedImageUrl(), copyImageItem));
 
   // Social/email anchors navigate themselves (hrefs set on open); just close the menu after.
   wrap.querySelectorAll('a.share-item').forEach((a) => a.addEventListener("click", close));
