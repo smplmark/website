@@ -1,9 +1,15 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { embedObjectKey } from "../src/embed";
 
 // The website Worker (src/index.ts): apex → www, the /benchmarks/{key} shell, and static fallthrough.
 function noFollow(url: string) {
   return SELF.fetch(url, { redirect: "manual" });
+}
+
+async function sha256hex(s: string): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 describe("website worker", () => {
@@ -31,6 +37,9 @@ describe("website worker", () => {
     expect(body).toContain('<meta name="description" content="Cycles CPU render performance');
     expect(body).toContain('<link rel="canonical" href="https://www.smplmark.org/benchmarks/blender-cpu"');
     expect(body).toContain('<meta property="og:title"');
+    // A CATEGORY benchmark unfurls its own chart image (not the logo) via a large Twitter card.
+    expect(body).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender-cpu.png"');
+    expect(body).toContain('<meta name="twitter:card" content="summary_large_image"');
     expect(body).toContain('<script type="application/ld+json">');
     expect(body).toContain('"@type":"Dataset"');
     expect(body).toContain(
@@ -134,6 +143,28 @@ describe("website worker", () => {
       expect(body).toContain("User-agent: *");
       expect(body).toContain("Sitemap: https://www.smplmark.org/sitemap.xml");
     }
+  });
+
+  it("serves a cached embed image straight from R2 (cache hit)", async () => {
+    // No params → empty canonical query → the empty-string SHA-256 keys the object.
+    const objectKey = embedObjectKey("blender-cpu", await sha256hex(""));
+    await env.EMBEDS.put(objectKey, new Uint8Array([0x89, 0x50, 0x4e, 0x47])); // PNG magic
+    const res = await SELF.fetch("https://www.smplmark.org/embed/blender-cpu.png");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toContain("immutable");
+    expect(new Uint8Array(await res.arrayBuffer())[0]).toBe(0x89); // the stored bytes, served back
+  });
+
+  it("404s an embed image for an unknown benchmark key", async () => {
+    const res = await SELF.fetch("https://www.smplmark.org/embed/ghost-benchmark.png");
+    expect(res.status).toBe(404);
+  });
+
+  it("400s a time-series embed image without a bounded range", async () => {
+    const res = await SELF.fetch("https://www.smplmark.org/embed/time-bench.png");
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/bounded range/);
   });
 
   it("builds a dynamic sitemap.xml from the published-benchmark list", async () => {

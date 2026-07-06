@@ -12,6 +12,17 @@
 //   4. Serve /robots.txt and a dynamic /sitemap.xml built from the published-benchmark list.
 //   5. Fall through to static assets (marketing pages, viewer JS/CSS, images) for everything else.
 
+import puppeteer from "@cloudflare/puppeteer";
+import {
+  EMBED_CACHE_CONTROL,
+  EMBED_HEIGHT,
+  EMBED_WIDTH,
+  canonicalEmbedQuery,
+  embedObjectKey,
+  embedPageUrl,
+  keyFromEmbedPath,
+  validateEmbedParams,
+} from "./embed";
 import {
   PROD_API_ORIGIN,
   benchmarkHeadExtras,
@@ -211,6 +222,86 @@ function serveRobots(): Response {
   });
 }
 
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Serve /embed/{key}.png — a shareable PNG of the benchmark's chart/table for the current params.
+ * Generate-once, serve-forever: check R2 first; on a miss, screenshot the ?embed=1 page with Browser
+ * Rendering, store the PNG in R2, and serve it. Params fully determine the image, so it's immutable.
+ *   • unknown key           → 404
+ *   • TIME chart, no range  → 400 (a bounded from/to is required for a deterministic image)
+ *   • upstream/API failure  → 502
+ */
+async function serveEmbedImage(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const key = keyFromEmbedPath(url.pathname);
+  if (key === null) return new Response("Not found", { status: 404 });
+
+  // Confirm the benchmark exists and learn its chart mode (TIME needs a bounded range).
+  let benchmark: BenchmarkResource | null = null;
+  try {
+    const doc = await fetchJson(`${apiOrigin(env)}/api/v1/benchmarks?filter[key]=${encodeURIComponent(key)}`);
+    const row = dataArray(doc)[0];
+    if (row && typeof row.id === "string") {
+      benchmark = { id: row.id, attributes: (row.attributes ?? {}) as BenchmarkResource["attributes"] };
+    }
+  } catch {
+    return new Response("Upstream error", { status: 502 });
+  }
+  if (!benchmark) return new Response("No published benchmark with that key", { status: 404 });
+
+  const chartXKind = (benchmark.attributes.observation_schema as { chart?: { x_kind?: unknown } } | undefined)
+    ?.chart?.x_kind;
+  const invalid = validateEmbedParams(chartXKind, url.searchParams);
+  if (invalid) return new Response(invalid, { status: 400 });
+
+  const canonical = canonicalEmbedQuery(url.searchParams);
+  const objectKey = embedObjectKey(key, await sha256Hex(canonical));
+
+  // R2 hit — serve the stored PNG (the CDN caches it in front of us via the immutable Cache-Control).
+  const cached = await env.EMBEDS.get(objectKey);
+  if (cached) {
+    return new Response(cached.body, {
+      status: 200,
+      headers: { "Content-Type": "image/png", "Cache-Control": EMBED_CACHE_CONTROL },
+    });
+  }
+
+  // Miss — screenshot the embed page (same host as this endpoint) and store the result.
+  let png: Uint8Array;
+  try {
+    png = await renderEmbedPng(env, embedPageUrl(url.origin, key, canonical));
+  } catch {
+    return new Response("Image generation failed", { status: 502 });
+  }
+  await env.EMBEDS.put(objectKey, png, {
+    httpMetadata: { contentType: "image/png", cacheControl: EMBED_CACHE_CONTROL },
+  });
+  return new Response(png, {
+    status: 200,
+    headers: { "Content-Type": "image/png", "Cache-Control": EMBED_CACHE_CONTROL },
+  });
+}
+
+/** Launch a headless browser, load the embed page, wait for the chart, and screenshot it. */
+async function renderEmbedPng(env: Env, pageUrl: string): Promise<Uint8Array> {
+  const browser = await puppeteer.launch(env.BROWSER);
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: EMBED_WIDTH, height: EMBED_HEIGHT });
+    await page.goto(pageUrl, { waitUntil: "networkidle0", timeout: 20000 });
+    // The viewer sets this once the chart/table has drawn (see benchmark.js markEmbedReady).
+    await page.waitForFunction("window.__EMBED_READY === true", { timeout: 15000 });
+    const shot = await page.screenshot({ type: "png" });
+    return typeof shot === "string" ? new TextEncoder().encode(shot) : new Uint8Array(shot);
+  } finally {
+    await browser.close();
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -255,6 +346,11 @@ export default {
     }
     if (isAppPage(url.pathname)) {
       return Response.redirect(toAppHost(url), 301);
+    }
+
+    // Shareable benchmark image: /embed/{key}.png (generated once via Browser Rendering, cached in R2).
+    if (url.pathname.startsWith("/embed/")) {
+      return serveEmbedImage(request, env);
     }
 
     // Data-driven benchmark page: SEO-critical content is server-side-rendered into the shell (see

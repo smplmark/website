@@ -22,13 +22,28 @@ const BENCH_BLENDER = {
     status: "PUBLISHED",
     published_at: "2026-07-04T15:51:02.616Z",
     updated_at: "2026-07-04T16:00:00.000Z",
-    observation_schema: { metrics: [{ name: "median_score" }], derived: [{ name: "submission_count" }] },
+    observation_schema: {
+      metrics: [{ name: "median_score" }],
+      derived: [{ name: "submission_count" }],
+      chart: { x_kind: "CATEGORY" },
+    },
     published_as: {
       kind: "INGESTED",
       source_name: "Blender Open Data",
       source_url: "https://opendata.blender.org",
       license: "CC0-1.0",
     },
+  },
+};
+
+// A TIME-series benchmark — its embed image requires a bounded from/to range.
+const BENCH_TIME = {
+  id: "bench-time",
+  attributes: {
+    key: "time-bench",
+    name: "Time Bench",
+    description: "A time-series benchmark.",
+    observation_schema: { metrics: [{ name: "skew_ms" }], derived: [], chart: { x_kind: "TIME" } },
   },
 };
 
@@ -72,6 +87,7 @@ function replyFor(path: string): { statusCode: number; data: string } {
   if (pathname === "/api/v1/benchmarks") {
     const key = queryParam(path, "filter[key]");
     if (key === "blender-cpu") return json({ data: [BENCH_BLENDER] });
+    if (key === "time-bench") return json({ data: [BENCH_TIME] });
     if (key === "no-targets") return json({ data: [BENCH_NOTARGETS] });
     if (key === "bare-attributes") return json({ data: [{ id: "bench-bare" }] }); // row without attributes
     if (key === "ghost-benchmark") return json({ data: [] });
@@ -105,6 +121,9 @@ export default defineConfig({
     cloudflareTest({
       miniflare: {
         fetchMock: agent,
+        // Simulated in-memory R2 for the /embed/{key}.png cache path. Browser Rendering has no
+        // miniflare simulation, so the generate-on-miss path is verified on deploy, not here.
+        r2Buckets: ["EMBEDS"],
         bindings: {
           // vitest auto-loads .dev.vars; blank it so tests exercise the PRODUCTION app-host
           // redirects (the DEV_APP_ORIGIN dev-loop behavior is exercised via wrangler dev). This

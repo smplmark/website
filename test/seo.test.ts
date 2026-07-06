@@ -224,6 +224,25 @@ describe("benchmarkHeadExtras", () => {
   it("notFoundHeadExtras is noindex", () => {
     expect(notFoundHeadExtras()).toContain('content="noindex"');
   });
+
+  it("uses the benchmark's chart image as og:image for non-TIME charts", () => {
+    const cat = benchmarkHeadExtras(
+      bench({ observation_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "CATEGORY" } } }),
+      { apiOrigin: API },
+    );
+    expect(cat).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender-cpu.png"');
+    expect(cat).toContain('<meta name="twitter:card" content="summary_large_image"');
+  });
+
+  it("keeps the logo (summary card) for TIME charts, which lack a bounded default window", () => {
+    const time = benchmarkHeadExtras(
+      bench({ observation_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "TIME" } } }),
+      { apiOrigin: API },
+    );
+    expect(time).toContain('<meta property="og:image" content="https://www.smplmark.org/img/logo-dark.png"');
+    expect(time).toContain('<meta name="twitter:card" content="summary"');
+    expect(time).not.toContain("summary_large_image");
+  });
 });
 
 describe("benchmarkSsrBody", () => {

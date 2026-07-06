@@ -3,6 +3,8 @@
   "name": "smplmark",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
+  // Required by @cloudflare/puppeteer (Browser Rendering) — it imports node:buffer et al.
+  "compatibility_flags": ["nodejs_compat"],
   // Account id is pinned (non-sensitive) so CI can deploy with only a CLOUDFLARE_API_TOKEN secret.
   "account_id": "f625d39b265af6ab514726f5f512d85e",
 
@@ -30,6 +32,11 @@
     // Canonical URLs carry no trailing slash: /about, /terms (not /about/, /terms/).
     "html_handling": "drop-trailing-slash"
   },
+
+  // Shareable benchmark images (/embed/{key}.png): Browser Rendering screenshots the ?embed=1 page,
+  // and the PNG is cached in R2 so it's generated once and served forever after. Both are free-tier.
+  "browser": { "binding": "BROWSER" },
+  "r2_buckets": [{ "binding": "EMBEDS", "bucket_name": "smplmark-embeds" }],
 
   "observability": {
     "enabled": true

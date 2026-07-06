@@ -10,6 +10,8 @@
 // block — before returning the shell. The interactive viewer then hydrates on top, replacing the
 // injected block with the live, filterable version.
 
+import { embedImageUrl } from "./embed";
+
 export const SITE_ORIGIN = "https://www.smplmark.org";
 export const PROD_API_ORIGIN = "https://app.smplmark.org";
 const OG_IMAGE = `${SITE_ORIGIN}/img/logo-dark.png`;
@@ -37,6 +39,7 @@ interface MetricDecl {
 interface ObservationSchema {
   metrics?: MetricDecl[];
   derived?: MetricDecl[];
+  chart?: { x_kind?: unknown };
 }
 
 interface PublishedAs {
@@ -213,6 +216,16 @@ export function benchmarkHeadExtras(
   const canonical = canonicalUrl(key, opts.siteOrigin);
   const jsonLd = escapeJsonForScript(JSON.stringify(datasetJsonLd(b, opts)));
 
+  // Social card: for chart/table benchmarks, unfurl the actual chart (a generated 1200×630 image);
+  // for TIME series we'd need a bounded window we don't have at page level, so keep the logo. The
+  // large-image Twitter card shows the chart prominently; the logo uses the plain summary card.
+  const xKind = a.observation_schema?.chart?.x_kind;
+  const hasChartImage = xKind !== undefined && xKind !== "TIME";
+  const image = hasChartImage
+    ? embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, key)
+    : OG_IMAGE;
+  const twitterCard = hasChartImage ? "summary_large_image" : "summary";
+
   const meta: string[] = [
     `<meta name="description" content="${escapeHtml(description)}" />`,
     `<link rel="canonical" href="${escapeHtml(canonical)}" />`,
@@ -222,11 +235,11 @@ export function benchmarkHeadExtras(
     `<meta property="og:title" content="${escapeHtml(title)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:url" content="${escapeHtml(canonical)}" />`,
-    `<meta property="og:image" content="${escapeHtml(OG_IMAGE)}" />`,
-    `<meta name="twitter:card" content="summary" />`,
+    `<meta property="og:image" content="${escapeHtml(image)}" />`,
+    `<meta name="twitter:card" content="${twitterCard}" />`,
     `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
     `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
-    `<meta name="twitter:image" content="${escapeHtml(OG_IMAGE)}" />`,
+    `<meta name="twitter:image" content="${escapeHtml(image)}" />`,
     `<script type="application/ld+json">${jsonLd}</script>`,
   ];
   return meta.join("\n  ");

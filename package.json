@@ -20,5 +20,8 @@
     "uplot": "^1.6.32",
     "vitest": "^4.1.9",
     "wrangler": "^4.106.0"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.1.0"
   }
 }
