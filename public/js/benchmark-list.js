@@ -254,24 +254,33 @@ async function load() {
   setupSearchBox(filters, filterable);
   if (filterable) renderFilterBar(filters);
 
-  let url = apiBase() + "/api/v1/benchmarks";
+  const base = apiBase() + "/api/v1/benchmarks";
   const qs = new URLSearchParams();
   if (filters.category) qs.set("filter[category]", filters.category);
   if (filters.tag) qs.set("filter[tag]", filters.tag);
   if (filters.q) qs.set("filter[search]", filters.q);
-  // "Newest" means most recently published — the public site's recency semantic. (Everything
-  // world-visible has a published_at; WITHDRAWN rows keep theirs.)
-  qs.set("sort", "-" + (filters.sort || "published_at"));
   // Home page: cap at the most recent benchmarks.
   if (!filterable) qs.set("page[size]", String(HOME_RECENT_LIMIT));
-  if ([...qs].length) url += "?" + qs.toString();
+
+  // "Newest" means most recently published — the public site's recency semantic. An API version that
+  // predates the published_at sort 400s it, so fall back to -created_at (also newest-first) to stay
+  // functional across a website/app deploy skew. An explicit user sort is used as-is (no fallback).
+  const desiredSort = "-" + (filters.sort || "published_at");
+  function urlWith(sort) {
+    const p = new URLSearchParams(qs);
+    p.set("sort", sort);
+    return base + "?" + p.toString();
+  }
 
   if (status) {
     status.className = "status";
     status.textContent = "Loading…";
   }
   try {
-    const res = await fetch(url, { headers: { Accept: "application/vnd.api+json" } });
+    let res = await fetch(urlWith(desiredSort), { headers: { Accept: "application/vnd.api+json" } });
+    if (!res.ok && !filters.sort && res.status === 400) {
+      res = await fetch(urlWith("-created_at"), { headers: { Accept: "application/vnd.api+json" } });
+    }
     if (!res.ok) throw new Error("HTTP " + res.status);
     const doc = await res.json();
 

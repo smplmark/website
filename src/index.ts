@@ -187,8 +187,10 @@ async function serveSitemap(env: Env): Promise<Response> {
   const MAX_PAGES = 50; // sitemap protocol ceiling is 50,000 URLs
   try {
     for (let page = 1; page <= MAX_PAGES; page++) {
+      // No sort — order is irrelevant for a sitemap, and it avoids depending on a specific sort
+      // being available (an older app API 400s an unknown sort).
       const doc = await fetchJson(
-        `${origin}/api/v1/benchmarks?sort=-published_at&page[size]=${PAGE_SIZE}&page[number]=${page}`,
+        `${origin}/api/v1/benchmarks?page[size]=${PAGE_SIZE}&page[number]=${page}`,
       );
       const rows = dataArray(doc);
       for (const row of rows) {
