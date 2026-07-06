@@ -27,7 +27,7 @@
     </div>
   </header>
 
-  <main>
+  <main class="detail-page">
     <div class="wrap">
       <nav class="crumbs"><a id="crumb-back" href="/benchmarks">← All benchmarks</a></nav>
       <div class="detail-head">
@@ -48,14 +48,13 @@
         <div class="tabs" role="tablist">
           <button class="tab active" data-tab="overview">Overview</button>
           <button class="tab" data-tab="data">Data</button>
+          <button class="tab" data-tab="metrics">Metrics</button>
           <button class="tab" data-tab="methodology">Methodology</button>
           <button class="tab" data-tab="publisher">Publisher</button>
         </div>
 
         <section class="tab-panel active" data-panel="overview">
           <div class="prose" id="overview-about"></div>
-          <h2 class="section">Metrics</h2>
-          <div class="metrics" id="overview-metrics"></div>
         </section>
 
         <section class="tab-panel" data-panel="data">
@@ -86,6 +85,10 @@
               <div id="chart-status" class="status"></div>
             </div>
           </div>
+        </section>
+
+        <section class="tab-panel" data-panel="metrics">
+          <div id="metrics-body"></div>
         </section>
 
         <section class="tab-panel" data-panel="methodology">

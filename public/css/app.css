@@ -167,10 +167,14 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .bar-value { font-family: var(--mono); font-size: 13px; color: var(--muted); text-align: right; }
 
 /* ── Benchmark detail ── */
-/* Single-column pages (about/sources/terms/privacy/benchmark detail): the heading and body
-   share one centered column narrower than the header's full-width .wrap, so both margins read
-   as equal instead of the content hugging the wrap's left edge. */
+/* Standalone prose pages (about/sources/terms/privacy): the heading and body share one centered
+   column narrower than the header's full-width .wrap, so both margins read as equal. */
 .detail-head { max-width: var(--contentw); margin: 0 auto 8px; }
+/* The benchmark detail page has a crumb, full-width tabs, and a wide Data panel, so its content
+   left-aligns with those (not centered) — otherwise the title/overview read as shifted right. */
+.detail-page .detail-head,
+.detail-page .prose,
+.detail-page .publisher { margin-left: 0; margin-right: 0; }
 .detail-head h1 { font-size: 32px; letter-spacing: -0.02em; margin: 0 0 6px; }
 .detail-head .tagline { color: var(--muted); font-size: 17px; margin: 0 0 10px; }
 .detail-head .byline { font-size: 14px; color: var(--muted); }
@@ -226,17 +230,18 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .prose a { color: var(--accent); }
 .prose a:hover { text-decoration: underline; }
 
-.metrics { max-width: var(--contentw); margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
-.metric {
-  border: 1px solid var(--border);
-  background: var(--panel);
-  border-radius: var(--radius);
-  padding: 14px 16px;
+/* Metrics tab: a compact table (name · unit · description), left-anchored like the rest of the page. */
+.metrics-table { width: 100%; max-width: var(--contentw); border-collapse: collapse; font-size: 14px; }
+.metrics-table th, .metrics-table td {
+  text-align: left;
+  padding: 10px 16px 10px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
 }
-.metric .name { font-family: var(--mono); font-size: 15px; color: var(--text); }
-.metric .name .unit { color: var(--muted); font-size: 13px; margin-left: 6px; }
-.metric .kind { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; margin-left: 8px; }
-.metric .desc { color: var(--muted); font-size: 14px; margin-top: 6px; }
+.metrics-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.metrics-table .metric-name { font-family: var(--mono); color: var(--text); white-space: nowrap; }
+.metrics-table .metric-unit { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+.metrics-table .metric-desc { color: var(--muted); }
 
 .publisher { max-width: var(--contentw); margin: 0 auto; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 22px 24px; }
 .publisher h3 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }

@@ -392,6 +392,7 @@ async function init() {
   renderHead();
   renderBanners();
   renderOverview();
+  renderMetrics();
   renderMethodology();
   renderPublisher();
   // Before setupTabs: an initial #data hash (or a deep link) draws the chart immediately, and
@@ -484,15 +485,28 @@ function renderBanners() {
 
 function renderOverview() {
   el("overview-about").innerHTML = paragraphs(benchmark.attributes.about || benchmark.attributes.description);
-  el("overview-metrics").innerHTML = metricList.length
-    ? metricList
-        .map((m) => {
-          const unit = m.unit ? ` <span class="unit">${esc(m.unit)}</span>` : "";
-          const desc = m.description ? `<div class="desc">${esc(m.description)}</div>` : "";
-          return `<div class="metric"><div class="name">${esc(m.name)}${unit}</div>${desc}</div>`;
-        })
-        .join("")
-    : '<p class="muted">This benchmark declares no metrics.</p>';
+}
+
+// Metrics live in their own tab, as a table: name · unit · description (unit is em-dash when absent).
+function renderMetrics() {
+  const box = el("metrics-body");
+  if (!box) return;
+  if (!metricList.length) {
+    box.innerHTML = '<p class="muted">This benchmark declares no metrics.</p>';
+    return;
+  }
+  box.innerHTML =
+    '<table class="metrics-table"><thead><tr>' +
+    "<th>Metric</th><th>Unit</th><th>Description</th></tr></thead><tbody>" +
+    metricList
+      .map(
+        (m) =>
+          "<tr><td class=\"metric-name\">" + esc(m.name) + "</td>" +
+          '<td class="metric-unit">' + (m.unit ? esc(m.unit) : "—") + "</td>" +
+          '<td class="metric-desc">' + (m.description ? esc(m.description) : "") + "</td></tr>",
+      )
+      .join("") +
+    "</tbody></table>";
 }
 
 function renderMethodology() {
@@ -562,7 +576,7 @@ function renderPublisher() {
 
 // ── Tabs — hash-routed (#overview/#data/#methodology/#publisher) so refresh restores the tab
 // and the back button walks tab history. ──
-const TAB_NAMES = ["overview", "data", "methodology", "publisher"];
+const TAB_NAMES = ["overview", "data", "metrics", "methodology", "publisher"];
 function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
