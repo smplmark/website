@@ -23,10 +23,32 @@ timestamp).
 2. Server-side-renders the SEO-critical content into the shell (`public/benchmark.html`) for every
    `/benchmarks/{key}` (see **SEO / server-side rendering** below).
 3. Serves `/robots.txt` and a dynamic `/sitemap.xml` built from the published-benchmark list.
-4. Falls through to static assets for everything else (marketing pages, viewer JS/CSS, images).
+4. Generates shareable benchmark images at `/embed/{key}.png` (see **Shareable images** below).
+5. Falls through to static assets for everything else (marketing pages, viewer JS/CSS, images).
 
 Pages: `/` (home), `/benchmarks` (list), `/benchmarks/{key}` (data-driven benchmark page), `/about`,
 `/sources`, `/terms`, `/privacy`.
+
+## Shareable images (`/embed/{key}.png`)
+
+Citing a benchmark usually means embedding its chart, so the Worker generates a **1200×630 PNG** of
+any benchmark view. `GET /embed/{key}.png?<view params>` fetches the benchmark, checks R2, and on a
+cache miss uses **Browser Rendering** (headless Chrome, `@cloudflare/puppeteer`) to screenshot the
+benchmark page in **embed mode** (`?embed=1`, see `public/js/benchmark.js`) — a chrome-free, branded
+frame showing just the top-12 chart/table. The PNG is stored in **R2** (`smplmark-embeds`) and served
+from there forever after; the params fully determine the image, so it's immutable (`Cache-Control:
+…immutable`). The view params mirror the deep-link params, so the image shows exactly the cited
+slice (e.g. `?facet.vendor=AMD`). TIME-series benchmarks require a bounded `from`/`to` (a deterministic
+window); unknown keys `404`. The Share menu's **Copy image link** hands the author this URL, and each
+benchmark page's `og:image` points at it so a shared link unfurls the real chart (non-TIME today).
+
+- **Bindings** (both Cloudflare free-tier): `BROWSER` (Browser Rendering) and `EMBEDS` (R2 bucket
+  `smplmark-embeds`), plus the `nodejs_compat` flag that `@cloudflare/puppeteer` needs — all in
+  `wrangler.jsonc`. Pure logic lives in `src/embed.ts`.
+- **Local dev caveat:** Browser Rendering runs on Cloudflare's browser fleet, not in `wrangler dev`,
+  so a cache *miss* returns `502` locally; the R2-hit, `404`, and `400` paths work locally, and the
+  full generate-and-cache path is exercised on deploy. Bump `EMBED_TEMPLATE_VERSION` in `src/embed.ts`
+  if the embed visual changes (or ingested data is re-imported), to invalidate old cached PNGs.
 
 ## SEO / server-side rendering
 
@@ -112,9 +134,10 @@ public/
   js/benchmark.js           benchmark detail: fetches the app API, renders chart + attribution badge
   js/benchmark-list.js      the card grid on the home + list pages
   js/sources.js             the data-driven /sources catalog table
-  css/app.css               shared styles
+  css/app.css               shared styles (incl. the ?embed=1 image frame)
   vendor/uPlot.*            chart library (vendored, no build step)
 scripts/gen-brand.mjs       regenerates the brand PNGs under public/img
-src/index.ts                the routing Worker (redirects, benchmark SSR, sitemap/robots, fallthrough)
+src/index.ts                the routing Worker (redirects, SSR, sitemap/robots, /embed images)
 src/seo.ts                  pure SEO builders (head tags, JSON-LD, SSR body, sitemap, robots)
+src/embed.ts                pure embed helpers (cache key, param validation, page/image URLs)
 ```
