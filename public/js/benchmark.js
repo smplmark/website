@@ -610,9 +610,71 @@ function renderPublisher() {
   wireBadgeImages(box);
 }
 
-// ── Tabs — hash-routed (#overview/#data/#methodology/#publisher) so refresh restores the tab
-// and the back button walks tab history. ──
-const TAB_NAMES = ["overview", "data", "metrics", "methodology", "publisher"];
+// ── Stats tab — the benchmark's shape and provenance dates at a glance. Counts come from cheap
+// one-row `meta[total]` probes (so this works in both client and leaderboard mode), fetched lazily
+// the first time the tab is opened. ──
+let statsLoaded = false;
+
+async function fetchTotal(scope) {
+  try {
+    const doc = await fetchJson(
+      API + "/api/v1/" + scope + "?filter[benchmark]=" + encodeURIComponent(benchmark.id) +
+        "&page[size]=1&meta[total]=true",
+    );
+    const t = doc && doc.meta && doc.meta.pagination && doc.meta.pagination.total;
+    return typeof t === "number" ? t : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function statsRow(label, valueHtml) {
+  return '<tr><td class="stat-label">' + esc(label) + '</td><td class="stat-value">' + valueHtml + "</td></tr>";
+}
+
+// A per-parent average, rendered as a whole number when it divides evenly (the common "exactly one
+// run per target" case) and one decimal otherwise — a quick read on uniformity.
+function perParent(total, parents) {
+  if (typeof total !== "number" || typeof parents !== "number" || parents <= 0) return "—";
+  const avg = total / parents;
+  return Number.isInteger(avg) ? String(avg) : avg.toFixed(1);
+}
+
+async function renderStats() {
+  const box = el("stats-body");
+  if (!box) return;
+  const a = benchmark.attributes;
+  box.innerHTML = '<p class="muted">Loading…</p>';
+
+  const [nTargets, nRuns, nObs] = await Promise.all([
+    fetchTotal("targets"),
+    fetchTotal("runs"),
+    fetchTotal("observations"),
+  ]);
+
+  const dateOrDash = (iso) => (iso ? esc(fmtDate(iso)) : "—");
+  const num = (n) => (typeof n === "number" ? esc(n.toLocaleString()) : "—");
+  const status = a.closed
+    ? "Closed" + (a.closed_at ? " · " + esc(fmtDate(a.closed_at)) : "")
+    : '<span class="pill live" title="This benchmark is live — the publisher is still adding data.">live</span>';
+
+  box.innerHTML =
+    '<table class="stats-table"><tbody>' +
+    statsRow("Published", dateOrDash(a.published_at)) +
+    statsRow("Created", dateOrDash(a.created_at)) +
+    statsRow("Last updated", dateOrDash(a.updated_at)) +
+    statsRow("Status", status) +
+    statsRow("Targets", num(nTargets)) +
+    statsRow("Runs", num(nRuns)) +
+    statsRow("Observations", num(nObs)) +
+    statsRow("Runs per target", perParent(nRuns, nTargets)) +
+    statsRow("Observations per run", perParent(nObs, nRuns)) +
+    "</tbody></table>";
+}
+
+// ── Tabs — hash-routed (#overview/#data/#metrics/#methodology/#publisher/#stats) so refresh
+// restores the tab and the back button walks tab history. ──
+const TAB_NAMES = ["overview", "data", "metrics", "methodology", "publisher", "stats"];
 function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
@@ -622,6 +684,9 @@ function activateTab(name, updateHash = true) {
     } else if (!chartDrawn) {
       drawChart();
     }
+  } else if (name === "stats" && !statsLoaded) {
+    statsLoaded = true;
+    renderStats();
   }
   if (updateHash && location.hash !== "#" + name) location.hash = name;
 }
@@ -795,7 +860,12 @@ function syncViewParams() {
     params.set("targets", keys.join(","));
   }
 
-  if (metricSelection.length && metricSelection.join(",") !== defaultMetricSelection().join(",")) {
+  if (barsSingle()) {
+    // Bars carry a single metric; keep the URL clean when it's the default headline metric.
+    if (metricSelection.length === 1 && metricSelection[0] !== defaultBarsMetric()) {
+      params.set("metrics", metricSelection[0]);
+    }
+  } else if (metricSelection.length && metricSelection.join(",") !== defaultMetricSelection().join(",")) {
     params.set("metrics", metricSelection.join(","));
   }
 
@@ -1136,39 +1206,122 @@ async function downloadObservations(accept, extension) {
   }
 }
 
-// ── Share menu ──
-// One button that answers "what do you want to do with this data?": copy the shareable link,
-// post to a social network (plain intent URLs — no SDKs, no tracking, matching our privacy stance),
-// email it, or download the current scope as CSV/JSON. The link always reflects the on-screen view
-// because the deep-link params keep the URL in sync. Rendered into both the chart-mode and
-// leaderboard-mode control bars; only one exists at a time (leaderboard replaces the panel).
+// ── Share + download ──
+// Two sibling controls in the action bar. Share answers "spread this view": copy the shareable link
+// or its image, or post to a social network (plain intent URLs — no SDKs, no tracking, matching our
+// privacy stance). Download is its own button (data isn't sharing): the current scope as CSV/JSON.
+// Both links always reflect the on-screen view because the deep-link params keep the URL in sync.
+// Rendered into both the chart-mode and leaderboard-mode control bars.
+
+// Inline glyphs (no external assets): brand marks for the social targets, plus action icons.
+const ICONS = {
+  link: '<svg class="share-ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M6.6 9.4l2.8-2.8M6.9 4.6l.9-.9a2.3 2.3 0 013.3 3.3l-.9.9M9.1 11.4l-.9.9a2.3 2.3 0 01-3.3-3.3l.9-.9" stroke-linecap="round"/></svg>',
+  image: '<svg class="share-ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="1.5"/><circle cx="5.8" cy="6.4" r="1" fill="currentColor" stroke="none"/><path d="M2.6 11.6l3.3-3.2 2.4 2.3 2-1.9 3.1 2.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  x: '<svg class="share-ico" viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M9.4 6.9L14.2 1.4h-1.5L8.7 5.9 5.5 1.4H1.4l5 7-5 5.8h1.5l4.4-5.1 3.4 5.1h4.1l-5.2-7.3zm-1.6 1.8l-.5-.7L3.4 2.5h1.6l3.3 4.7.5.7 4.3 6h-1.6L7.8 8.7z"/></svg>',
+  linkedin: '<svg class="share-ico" viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M3.4 4.5a1.15 1.15 0 100-2.3 1.15 1.15 0 000 2.3zM2.45 5.5h1.9v8.1h-1.9V5.5zm3.35 0h1.82v1.1h.03c.26-.48.9-1 1.85-1 1.98 0 2.35 1.28 2.35 2.96v5.05h-1.9V9.0c0-.98-.02-2.24-1.38-2.24-1.38 0-1.6 1.06-1.6 2.17v4.67H5.8V5.5z"/></svg>',
+  facebook: '<svg class="share-ico" viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M15 8a7 7 0 10-8.1 6.9V10H5.1V8h1.8V6.5c0-1.77 1.05-2.75 2.67-2.75.77 0 1.58.14 1.58.14v1.74h-.89c-.88 0-1.15.54-1.15 1.1V8h1.96l-.31 2H9.08v4.9A7 7 0 0015 8z"/></svg>',
+  email: '<svg class="share-ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2.6 4.6L8 8.8l5.4-4.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  file: '<svg class="share-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M4 2h5l3 3v9H4V2z" stroke-linejoin="round"/><path d="M9 2v3h3M6 8.5h4M6 11h4" stroke-linecap="round"/></svg>',
+  download: '<svg class="dl-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2.5v7m0 0L5.2 6.7M8 9.5l2.8-2.8M3 13h10" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  caret: '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+
+function shareItem(tag, act, icon, label, extra) {
+  return (
+    "<" + tag + ' class="share-item" data-act="' + act + '" role="menuitem"' + (extra || "") + ">" +
+    icon + '<span class="share-label">' + label + "</span></" + tag + ">"
+  );
+}
 
 function shareMenuHtml() {
   return (
     '<div class="share">' +
     '<button type="button" class="btn share-btn" aria-haspopup="true" aria-expanded="false">Share' +
-    '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
+    ICONS.caret +
     "</button>" +
     '<div class="share-menu" hidden role="menu">' +
-    '<button type="button" class="share-item" data-act="copy" role="menuitem">Copy link</button>' +
-    '<button type="button" class="share-item" data-act="copy-image" role="menuitem">Copy image link</button>' +
-    '<a class="share-item" data-act="x" role="menuitem" target="_blank" rel="noopener">Share on X</a>' +
-    '<a class="share-item" data-act="linkedin" role="menuitem" target="_blank" rel="noopener">Share on LinkedIn</a>' +
-    '<a class="share-item" data-act="facebook" role="menuitem" target="_blank" rel="noopener">Share on Facebook</a>' +
-    '<a class="share-item" data-act="email" role="menuitem">Email</a>' +
+    shareItem("button", "copy", ICONS.link, "Copy link", ' type="button"') +
+    shareItem("button", "copy-image", ICONS.image, "Copy image link", ' type="button"') +
     '<div class="share-sep" role="separator"></div>' +
-    '<button type="button" class="share-item" data-act="csv" role="menuitem">Download CSV</button>' +
-    '<button type="button" class="share-item" data-act="json" role="menuitem">Download JSON</button>' +
+    shareItem("a", "x", ICONS.x, "Share on X", ' target="_blank" rel="noopener"') +
+    shareItem("a", "linkedin", ICONS.linkedin, "Share on LinkedIn", ' target="_blank" rel="noopener"') +
+    shareItem("a", "facebook", ICONS.facebook, "Share on Facebook", ' target="_blank" rel="noopener"') +
+    shareItem("a", "email", ICONS.email, "Email") +
     "</div></div>"
   );
 }
 
-// Wire a rendered share control. `downloads` supplies the mode-specific CSV/JSON handlers.
-function wireShareMenu(root, downloads) {
-  const wrap = root.querySelector(".share");
+// The download control: its own button, since exporting data isn't the same act as sharing a view.
+function downloadMenuHtml() {
+  return (
+    '<div class="share dl">' +
+    '<button type="button" class="btn share-btn dl-btn" aria-haspopup="true" aria-expanded="false" title="Download this view as a file">' +
+    ICONS.download + "Download" + ICONS.caret +
+    "</button>" +
+    '<div class="share-menu" hidden role="menu">' +
+    shareItem("button", "csv", ICONS.file, "CSV", ' type="button"') +
+    shareItem("button", "json", ICONS.file, "JSON", ' type="button"') +
+    "</div></div>"
+  );
+}
+
+// Shared open/close plumbing for a .share dropdown (Escape + outside-click dismiss). onOpen runs
+// just before the menu is shown (the share menu refreshes its live hrefs there).
+function attachDropdown(wrap, onOpen) {
   const btn = wrap.querySelector(".share-btn");
   const menu = wrap.querySelector(".share-menu");
-  const copyItem = wrap.querySelector('[data-act="copy"]');
+  let onDoc = null;
+  function onKey(e) { if (e.key === "Escape") { close(); btn.focus(); } }
+  function close() {
+    menu.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    if (onDoc) {
+      document.removeEventListener("click", onDoc);
+      document.removeEventListener("keydown", onKey);
+      onDoc = null;
+    }
+  }
+  function open() {
+    if (onOpen) onOpen();
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    onDoc = (e) => { if (!wrap.contains(e.target)) close(); };
+    // Defer so the opening click doesn't immediately close it.
+    setTimeout(() => {
+      if (!menu.hidden) {
+        document.addEventListener("click", onDoc);
+        document.addEventListener("keydown", onKey);
+      }
+    }, 0);
+  }
+  btn.addEventListener("click", () => (menu.hidden ? open() : close()));
+  return { close };
+}
+
+async function copyToClipboard(text, item) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
+  }
+  // Flash "Copied!" in the label span only, so the icon survives the feedback.
+  const label = item.querySelector(".share-label") || item;
+  const prev = label.textContent;
+  label.textContent = "Copied!";
+  setTimeout(() => { label.textContent = prev; }, 1200);
+}
+
+// Wire a rendered Share control (copy link/image + social intents).
+function wireShareMenu(root) {
+  const wrap = root.querySelector(".share:not(.dl)");
+  const { close } = attachDropdown(wrap, refreshLinks);
 
   // Social hrefs are refreshed every open, since the shareable URL changes as controls change.
   function refreshLinks() {
@@ -1186,58 +1339,19 @@ function wireShareMenu(root, downloads) {
       "mailto:?subject=" + encTitle + "&body=" + encodeURIComponent(title + "\n\n" + url);
   }
 
-  let onDoc = null;
-  function close() {
-    menu.hidden = true;
-    btn.setAttribute("aria-expanded", "false");
-    if (onDoc) {
-      document.removeEventListener("click", onDoc);
-      document.removeEventListener("keydown", onKey);
-      onDoc = null;
-    }
-  }
-  function onKey(e) {
-    if (e.key === "Escape") { close(); btn.focus(); }
-  }
-  function open() {
-    refreshLinks();
-    menu.hidden = false;
-    btn.setAttribute("aria-expanded", "true");
-    onDoc = (e) => { if (!wrap.contains(e.target)) close(); };
-    // Defer so the opening click doesn't immediately close it.
-    setTimeout(() => {
-      if (!menu.hidden) {
-        document.addEventListener("click", onDoc);
-        document.addEventListener("keydown", onKey);
-      }
-    }, 0);
-  }
-  btn.addEventListener("click", () => (menu.hidden ? open() : close()));
-
-  async function copyToClipboard(text, item) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (_) {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); } catch (_) {}
-      document.body.removeChild(ta);
-    }
-    const prev = item.textContent;
-    item.textContent = "Copied!";
-    setTimeout(() => { item.textContent = prev; }, 1200);
-  }
-  copyItem.addEventListener("click", () => copyToClipboard(shareUrl(), copyItem));
-  const copyImageItem = wrap.querySelector('[data-act="copy-image"]');
-  copyImageItem.addEventListener("click", () => copyToClipboard(embedImageUrl(), copyImageItem));
+  wrap.querySelector('[data-act="copy"]').addEventListener("click", (e) =>
+    copyToClipboard(shareUrl(), e.currentTarget));
+  wrap.querySelector('[data-act="copy-image"]').addEventListener("click", (e) =>
+    copyToClipboard(embedImageUrl(), e.currentTarget));
 
   // Social/email anchors navigate themselves (hrefs set on open); just close the menu after.
-  wrap.querySelectorAll('a.share-item').forEach((a) => a.addEventListener("click", close));
+  wrap.querySelectorAll("a.share-item").forEach((a) => a.addEventListener("click", close));
+}
 
+// Wire a rendered Download control. `downloads` supplies the mode-specific CSV/JSON handlers.
+function wireDownloadMenu(root, downloads) {
+  const wrap = root.querySelector(".share.dl");
+  const { close } = attachDropdown(wrap);
   wrap.querySelector('[data-act="csv"]').addEventListener("click", () => { close(); downloads.csv(); });
   wrap.querySelector('[data-act="json"]').addEventListener("click", () => { close(); downloads.json(); });
 }
@@ -1363,7 +1477,7 @@ function setupLeaderboard() {
     '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
     '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
     "</div></div>" +
-    '<div class="links" id="lb-actions">' + shareMenuHtml() + "</div>" +
+    '<div class="links" id="lb-actions">' + shareMenuHtml() + downloadMenuHtml() + "</div>" +
     "</div>" +
     '<div id="lb-main"></div>' +
     '<div id="lb-status" class="status"></div>' +
@@ -1406,7 +1520,8 @@ function setupLeaderboard() {
       renderLbMain();
     });
   });
-  wireShareMenu(el("lb-actions"), {
+  wireShareMenu(el("lb-actions"));
+  wireDownloadMenu(el("lb-actions"), {
     csv: () => downloadLeaderboard("csv"),
     json: () => downloadLeaderboard("json"),
   });
@@ -1695,7 +1810,9 @@ function defaultMetricSelection() {
   const primary = chartDecl && names.includes(chartDecl.y) ? chartDecl.y : names[0];
   const ordered = [primary, ...names.filter((n) => n !== primary)];
   // Fit heuristic: how many columns sit beside the target column without horizontal scrolling.
-  const width = el("chart").clientWidth || 900;
+  // Measure the data-main container (the chart div itself is only as wide as the bar grid, ~356px).
+  const main = document.querySelector(".data-main");
+  const width = (main && main.clientWidth) || el("chart").clientWidth || 900;
   const fit = Math.max(1, Math.floor((width - 300) / 140));
   const kept = ordered.slice(0, Math.min(fit, ordered.length));
   return names.filter((n) => kept.includes(n)); // back to schema order
@@ -1724,10 +1841,15 @@ function setupMetricControl() {
   panel.addEventListener("change", (e) => {
     const name = e.target.dataset && e.target.dataset.metric;
     if (!name) return;
-    const set = new Set(metricSelection);
-    if (e.target.checked) set.add(name);
-    else if (set.size > 1) set.delete(name); // never zero metrics
-    metricSelection = metricList.map((m) => m.name).filter((n) => set.has(n));
+    if (barsSingle()) {
+      // Bars plot exactly one metric — the radio replaces the selection outright.
+      metricSelection = [name];
+    } else {
+      const set = new Set(metricSelection);
+      if (e.target.checked) set.add(name);
+      else if (set.size > 1) set.delete(name); // never zero metrics
+      metricSelection = metricList.map((m) => m.name).filter((n) => set.has(n));
+    }
     renderMetricControl();
     drawChart();
   });
@@ -1742,11 +1864,42 @@ function setupMetricControl() {
   renderMetricControl();
 }
 
+// Bars show one metric; the table shows any set of them. The metric control reflects that: a radio
+// list (single-select) in bars view, checkboxes in table/line view.
+function barsSingle() {
+  return chartMode === "CATEGORY" && chartView === "bars";
+}
+
+// The metric bars default to (the chart's declared headline, else the first) — kept out of the URL.
+function defaultBarsMetric() {
+  const names = metricList.map((m) => m.name);
+  if (chartDecl && names.includes(chartDecl.y)) return chartDecl.y;
+  return names.length ? names[0] : null;
+}
+
 function renderMetricControl() {
   const panel = el("metric-panel");
   if (!panel) return;
-  el("metric-toggle").textContent =
-    "Metrics · " + metricSelection.length + "/" + metricList.length;
+  const toggle = el("metric-toggle");
+  if (barsSingle()) {
+    // Collapse any carried-over multi-selection to the single plotted metric.
+    const y = currentY();
+    if (metricSelection.length !== 1 || metricSelection[0] !== y) metricSelection = [y];
+    toggle.textContent = "Metric · " + metricSelection[0];
+    panel.innerHTML = metricList
+      .map((m) => {
+        const on = m.name === metricSelection[0];
+        return (
+          '<label class="rail-row">' +
+          '<input type="radio" name="bars-metric" data-metric="' + esc(m.name) + '"' + (on ? " checked" : "") + " />" +
+          '<span class="rail-name" title="' + esc(m.name) + '">' + esc(m.name) + "</span>" +
+          "</label>"
+        );
+      })
+      .join("");
+    return;
+  }
+  toggle.textContent = "Metrics · " + metricSelection.length + "/" + metricList.length;
   panel.innerHTML = metricList
     .map((m) => {
       const on = metricSelection.includes(m.name);
@@ -1792,6 +1945,10 @@ function setupChartControls() {
           b.classList.toggle("active", on);
           b.setAttribute("aria-checked", String(on));
         });
+        // The table is where you see everything, so entering it shows all metrics (the wrap scrolls
+        // if they overflow); bars collapse to one (renderMetricControl handles it).
+        if (chartView === "table") metricSelection = metricList.map((m) => m.name);
+        renderMetricControl();
         tableSort = { key: null, desc: true };
         drawChart();
       });
@@ -1809,8 +1966,9 @@ function setupChartControls() {
     });
   }
   const actions = el("chart-actions");
-  actions.innerHTML = shareMenuHtml();
-  wireShareMenu(actions, {
+  actions.innerHTML = shareMenuHtml() + downloadMenuHtml();
+  wireShareMenu(actions);
+  wireDownloadMenu(actions, {
     csv: () => downloadObservations("text/csv", "csv"),
     json: () => downloadObservations("application/vnd.api+json", "json"),
   });

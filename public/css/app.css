@@ -248,6 +248,12 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .metrics-table .metric-unit { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
 .metrics-table .metric-desc { color: var(--muted); }
 
+/* Stats tab: a two-column label/value table (dates + the target/run/observation counts). */
+.stats-table { border-collapse: collapse; font-size: 14px; max-width: var(--contentw); }
+.stats-table td { padding: 10px 16px 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.stats-table .stat-label { color: var(--muted); white-space: nowrap; padding-right: 40px; }
+.stats-table .stat-value { font-family: var(--mono); color: var(--text); white-space: nowrap; }
+
 .publisher { max-width: var(--contentw); margin: 0 auto; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 22px 24px; }
 .publisher h3 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
 .publisher .since { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
@@ -488,22 +494,29 @@ footer.site a.gh svg { display: block; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
-/* ── Share menu (benchmark Data tab) ── */
+/* ── Share + download menus (benchmark Data tab) ── */
 .share { position: relative; display: inline-block; }
+.share.dl { margin-left: 8px; } /* the download button sits beside Share */
 .share-btn { display: inline-flex; align-items: center; gap: 6px; height: var(--control-h); }
 .share-btn svg { opacity: 0.7; }
+.share-btn .dl-ico { opacity: 1; } /* the leading download glyph stays crisp; only the caret dims */
 .share-menu {
   position: absolute; z-index: 20; top: calc(var(--control-h) + 6px); right: 0; min-width: 200px;
   padding: 6px; display: flex; flex-direction: column;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
+.share.dl .share-menu { min-width: 150px; }
 .share-menu[hidden] { display: none; }
 .share-item {
-  display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px;
-  background: none; border: none; color: var(--text); font: inherit; font-size: 14px; cursor: pointer;
+  display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: 6px; background: none; border: none;
+  color: var(--text); font: inherit; font-size: 14px; cursor: pointer; white-space: nowrap;
 }
 .share-item:hover { background: var(--panel-2); color: var(--text); text-decoration: none; }
+.share-ico { flex: 0 0 auto; color: var(--muted); }
+.share-item:hover .share-ico { color: var(--text); }
+.share-label { flex: 1 1 auto; }
 .share-sep { height: 1px; background: var(--border); margin: 6px 4px; }
 
 /* ── Embed mode (?embed=1): a fixed 1200×630 branded frame with only the chart/table, for the
@@ -543,14 +556,18 @@ body.embed #chart-status,
 body.embed .u-legend { display: none !important; }
 body.embed main { padding: 0; }
 body.embed .wrap { max-width: none; width: 1200px; height: 630px; padding: 0; position: relative; }
-body.embed #tabs-wrap { height: 630px; padding: 60px 34px 46px; }
+/* Reserve the title (60px) and caption (46px) bands, plus a ~20px breathing gap above and below the
+   chart so it isn't jammed against them, and wider side margins. */
+body.embed #tabs-wrap { height: 630px; padding: 80px 40px 64px; }
 body.embed .tab-panel[data-panel="data"] { height: 100%; }
 body.embed .data-layout { display: block; height: 100%; }
 body.embed .data-main { height: 100%; display: flex; flex-direction: column; }
 body.embed .chart-panel { flex: 1; min-height: 0; }
 body.embed #chart, body.embed #lb-main { height: 100%; }
 body.embed #lb-main .table-wrap, body.embed #chart .table-wrap { overflow: hidden; }
-body.embed .bars { gap: 8px; }
+/* Distribute the (up to 12) bars evenly across the full frame height — even spacing top-to-bottom,
+   no dead space after the last bar (space-evenly gives equal margins at the ends too). */
+body.embed .bars { height: 100%; gap: 0; padding: 0; justify-content: space-evenly; }
 
 .embed-title {
   position: absolute; top: 0; left: 0; right: 0; height: 60px;
