@@ -46,13 +46,27 @@ function gravatarUrl(hash, size) {
   return "https://www.gravatar.com/avatar/" + hash + "?s=" + size + "&d=mp";
 }
 
+// The publisher's own external URL (opened from the byline). For the smplmark view of the publisher,
+// visitors use the Publisher tab instead. Null when we have no external URL for them.
+function publisherUrl(pa) {
+  if (!pa) return null;
+  if (pa.kind === "INGESTED") return safeHttpUrl(pa.source_url);
+  if (pa.kind === "ORGANIZATION") {
+    const domains = Array.isArray(pa.verified_domains) ? pa.verified_domains : [];
+    return domains.length ? "https://" + domains[0] : null;
+  }
+  return null; // PERSONAL: no external site
+}
+
 // Build the frozen attribution badge from a benchmark's published_as snapshot. When nameHref is
-// given the name is a link (used in the byline to jump to the Publisher tab).
+// given the name is a link; an external (http) href opens in a new tab.
 function attributionMarkup(pa, nameHref) {
   if (!pa) return "";
   const label = esc(pa.source_name || pa.name || pa.display_name || "");
+  const external = nameHref && /^https?:/i.test(nameHref);
   const nameEl = nameHref
-    ? '<a href="' + esc(nameHref) + '" class="attribution-name" id="byline-link">' + label + "</a>"
+    ? '<a href="' + esc(nameHref) + '" class="attribution-name" id="byline-link"' +
+      (external ? ' target="_blank" rel="noopener"' : "") + ">" + label + "</a>"
     : '<span class="attribution-name">' + label + "</span>";
   if (pa.kind === "ORGANIZATION") {
     const logo = safeHttpUrl(pa.logo_url);
@@ -428,11 +442,12 @@ function renderHead() {
   el("bm-tagline").textContent = a.description || "";
   const chipsBox = el("bm-chips");
   if (chipsBox) chipsBox.innerHTML = chipsMarkup(a);
-  // Byline: the publisher at a glance — name + verification tier, straight from the frozen
-  // published_as snapshot. Clicking it opens the Publisher tab (plain #publisher hash link).
+  // Byline: the publisher at a glance — name + verification tier, from the frozen published_as
+  // snapshot. The name links to the publisher's own site (new tab); the Publisher tab holds
+  // smplmark's view of them. The 5px gap before the pill is CSS (.byline .publisher-kind).
   const pa = a.published_as;
   if (pa) {
-    el("bm-byline").innerHTML = attributionMarkup(pa, "#publisher") + " " + verifiedPill(pa);
+    el("bm-byline").innerHTML = attributionMarkup(pa, publisherUrl(pa)) + verifiedPill(pa);
     wireBadgeImages(el("bm-byline"));
   } else {
     el("bm-byline").textContent = "";
@@ -952,7 +967,7 @@ function renderBars(seriesTargets, perTargetPoints, yKey) {
     (embedMode ? rows.slice(0, EMBED_ROWS) : rows)
       .map((r, i) => {
         const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
-        const val = r.value == null ? "—" : r.value.toFixed(1) + (unit ? " " + unit : "");
+        const val = r.value == null ? "—" : fmtCell(r.value) + (unit ? " " + unit : "");
         return (
           '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
           '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
@@ -968,8 +983,12 @@ let tableSort = { key: null, desc: true };
 
 function fmtCell(v) {
   if (v == null) return "—";
+  if (typeof v !== "number" || !isFinite(v)) return String(v);
+  if (v === 0) return "0";
   if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString();
-  return (Math.round(v * 100) / 100).toString();
+  // ~4 significant figures, trailing zeros trimmed — preserves the source precision the old
+  // one-decimal rounding threw away (0.8234 vs 0.8251, not both "0.8").
+  return parseFloat(v.toPrecision(4)).toString();
 }
 
 function renderTable(seriesTargets, byTarget) {

@@ -35,6 +35,10 @@
 }
 
 * { box-sizing: border-box; }
+/* The `hidden` attribute must always win — otherwise a display: flex/grid rule (e.g. .field)
+   overrides it and a JS-hidden control (like the Range picker on non-time-series benchmarks) stays
+   visible. */
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -179,6 +183,7 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .detail-head .tagline { color: var(--muted); font-size: 17px; margin: 0 0 10px; }
 .detail-head .byline { font-size: 14px; color: var(--muted); }
 .detail-head .byline a { color: var(--accent); }
+.detail-head .byline .publisher-kind { margin-left: 5px; }
 
 /* ── Frozen publish attribution (byline badge + Publisher tab). Rendered from the benchmark's
    frozen published_as snapshot — never a live account lookup, so a later domain lapse or
