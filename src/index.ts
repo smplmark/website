@@ -20,7 +20,8 @@ import {
   canonicalEmbedQuery,
   embedObjectKey,
   embedPageUrl,
-  keyFromEmbedPath,
+  legacyKeyFromEmbedPath,
+  refFromEmbedPath,
   validateEmbedParams,
 } from "./embed";
 import {
@@ -66,9 +67,13 @@ function dataArray(doc: unknown): Record<string, unknown>[] {
   return Array.isArray(data) ? (data as Record<string, unknown>[]) : [];
 }
 
-/** /benchmarks/{key} — a single path segment after /benchmarks (not /benchmarks itself, which is the
- *  static index listing). */
+/** /benchmarks/{publisher}/{key} — the two-segment detail path (not /benchmarks, the static index). */
 function isBenchmarkDetail(pathname: string): boolean {
+  return /^\/benchmarks\/[^/]+\/[^/]+\/?$/.test(pathname);
+}
+
+/** /benchmarks/{key} — the legacy single-segment form, kept alive with a 301 to its publisher URL. */
+function isLegacyBenchmarkDetail(pathname: string): boolean {
   return /^\/benchmarks\/[^/]+\/?$/.test(pathname);
 }
 
@@ -83,9 +88,40 @@ function isApiPath(p: string): boolean {
   return p === "/api" || p.startsWith("/api/");
 }
 
-function keyFromDetailPath(pathname: string): string {
-  const parts = pathname.split("/").filter(Boolean); // ["benchmarks", "{key}"]
-  return decodeURIComponent(parts[1] ?? "");
+function refFromDetailPath(pathname: string): { publisher: string; key: string } {
+  const parts = pathname.split("/").filter(Boolean); // ["benchmarks", "{publisher}", "{key}"]
+  return {
+    publisher: decodeURIComponent(parts[1] ?? ""),
+    key: decodeURIComponent(parts[2] ?? ""),
+  };
+}
+
+/** Fetch one published benchmark by its publisher slug + key (unique together). */
+async function fetchBenchmarkByRef(
+  origin: string,
+  publisher: string,
+  key: string,
+): Promise<BenchmarkResource | null> {
+  const doc = await fetchJson(
+    `${origin}/api/v1/benchmarks?filter[publisher]=${encodeURIComponent(publisher)}&filter[key]=${encodeURIComponent(key)}`,
+  );
+  const row = dataArray(doc)[0];
+  return row && typeof row.id === "string"
+    ? { id: row.id, attributes: (row.attributes ?? {}) as BenchmarkResource["attributes"] }
+    : null;
+}
+
+/** Resolve a legacy bare key to its {publisher, key} via the API, for the 301 redirect. */
+async function resolveLegacyKey(
+  origin: string,
+  key: string,
+): Promise<{ publisher: string; key: string } | null> {
+  const doc = await fetchJson(`${origin}/api/v1/benchmarks?filter[key]=${encodeURIComponent(key)}`);
+  const row = dataArray(doc)[0];
+  const attrs = (row?.attributes ?? null) as Record<string, unknown> | null;
+  const publisher = attrs && typeof attrs.publisher_slug === "string" ? attrs.publisher_slug : "";
+  const resolvedKey = attrs && typeof attrs.key === "string" ? attrs.key : key;
+  return publisher ? { publisher, key: resolvedKey } : null;
 }
 
 /** Fetch the shell asset (benchmark.html) for a benchmark-detail request. */
@@ -103,20 +139,14 @@ function fetchShell(request: Request, env: Env): Promise<Response> {
  *   • benchmark found          → inject and serve 200.
  */
 async function serveBenchmarkPage(request: Request, env: Env): Promise<Response> {
-  const key = keyFromDetailPath(new URL(request.url).pathname);
+  const { publisher, key } = refFromDetailPath(new URL(request.url).pathname);
   const origin = apiOrigin(env);
 
   let benchmark: BenchmarkResource | null = null;
   let reachedApi = false;
   try {
-    const doc = await fetchJson(
-      `${origin}/api/v1/benchmarks?filter[key]=${encodeURIComponent(key)}`,
-    );
+    benchmark = await fetchBenchmarkByRef(origin, publisher, key);
     reachedApi = true;
-    const row = dataArray(doc)[0];
-    if (row && typeof row.id === "string") {
-      benchmark = { id: row.id, attributes: (row.attributes ?? {}) as BenchmarkResource["attributes"] };
-    }
   } catch {
     reachedApi = false;
   }
@@ -127,12 +157,7 @@ async function serveBenchmarkPage(request: Request, env: Env): Promise<Response>
   if (!reachedApi) return htmlResponse(shell, 200);
 
   // Definitive miss: a real 404, kept out of the search index.
-  if (!benchmark) {
-    const rewriter = new HTMLRewriter()
-      .on("title", { element(e) { e.setInnerContent("Benchmark not found — smplmark"); } })
-      .on("head", { element(e) { e.append(`\n  ${notFoundHeadExtras()}\n`, { html: true }); } });
-    return htmlResponse(rewriter.transform(shell), 404);
-  }
+  if (!benchmark) return shell404(shell);
 
   const found = benchmark; // const alias so the rewriter closures see a non-null value
 
@@ -167,6 +192,50 @@ async function serveBenchmarkPage(request: Request, env: Env): Promise<Response>
   // Edge-cacheable for a few minutes so steady traffic doesn't hit the API on every crawl/visit; a
   // freshly published benchmark still appears within the window (see the deploy note in README).
   return htmlResponse(rewriter.transform(shell), 200, "public, max-age=300, stale-while-revalidate=600");
+}
+
+/** A real 404 rendered from the shell: correct status + a noindex tag so it never enters the index. */
+function shell404(shell: Response): Response {
+  const rewriter = new HTMLRewriter()
+    .on("title", { element(e) { e.setInnerContent("Benchmark not found — smplmark"); } })
+    .on("head", { element(e) { e.append(`\n  ${notFoundHeadExtras()}\n`, { html: true }); } });
+  return htmlResponse(rewriter.transform(shell), 404);
+}
+
+/**
+ * A legacy /benchmarks/{key} request: resolve the bare key to its publisher URL and 301 there, so
+ * old links and citations keep working under the new /benchmarks/{publisher}/{key} scheme. An
+ * unknown key (or an unreachable API) falls back to a real 404 shell.
+ */
+async function redirectLegacyBenchmark(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const parts = url.pathname.split("/").filter(Boolean); // ["benchmarks", "{key}"]
+  const key = decodeURIComponent(parts[1] ?? "");
+  let ref: { publisher: string; key: string } | null = null;
+  try {
+    ref = await resolveLegacyKey(apiOrigin(env), key);
+  } catch {
+    ref = null;
+  }
+  if (ref) {
+    url.pathname = `/benchmarks/${encodeURIComponent(ref.publisher)}/${encodeURIComponent(ref.key)}`;
+    return Response.redirect(url.toString(), 301);
+  }
+  return shell404(await fetchShell(request, env));
+}
+
+/** A legacy /embed/{key}.png request: resolve the bare key and 301 to the publisher-scoped image. */
+async function redirectLegacyEmbed(request: Request, env: Env, key: string): Promise<Response> {
+  let ref: { publisher: string; key: string } | null = null;
+  try {
+    ref = await resolveLegacyKey(apiOrigin(env), key);
+  } catch {
+    ref = null;
+  }
+  if (!ref) return new Response("Not found", { status: 404 });
+  const url = new URL(request.url);
+  url.pathname = `/embed/${encodeURIComponent(ref.publisher)}/${encodeURIComponent(ref.key)}.png`;
+  return Response.redirect(url.toString(), 301);
 }
 
 /** Rebuild the asset response with our own status + cache headers (the asset ETag no longer applies). */
@@ -239,17 +308,14 @@ async function sha256Hex(input: string): Promise<string> {
  */
 async function serveEmbedImage(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
-  const key = keyFromEmbedPath(url.pathname);
-  if (key === null) return new Response("Not found", { status: 404 });
+  const ref = refFromEmbedPath(url.pathname);
+  if (ref === null) return new Response("Not found", { status: 404 });
+  const { publisher, key } = ref;
 
   // Confirm the benchmark exists and learn its chart mode (TIME needs a bounded range).
   let benchmark: BenchmarkResource | null = null;
   try {
-    const doc = await fetchJson(`${apiOrigin(env)}/api/v1/benchmarks?filter[key]=${encodeURIComponent(key)}`);
-    const row = dataArray(doc)[0];
-    if (row && typeof row.id === "string") {
-      benchmark = { id: row.id, attributes: (row.attributes ?? {}) as BenchmarkResource["attributes"] };
-    }
+    benchmark = await fetchBenchmarkByRef(apiOrigin(env), publisher, key);
   } catch {
     return new Response("Upstream error", { status: 502 });
   }
@@ -261,7 +327,7 @@ async function serveEmbedImage(request: Request, env: Env): Promise<Response> {
   if (invalid) return new Response(invalid, { status: 400 });
 
   const canonical = canonicalEmbedQuery(url.searchParams);
-  const objectKey = embedObjectKey(key, await sha256Hex(canonical));
+  const objectKey = embedObjectKey(publisher, key, await sha256Hex(canonical));
 
   // R2 hit — serve the stored PNG (the CDN caches it in front of us via the immutable Cache-Control).
   const cached = await env.EMBEDS.get(objectKey);
@@ -275,7 +341,7 @@ async function serveEmbedImage(request: Request, env: Env): Promise<Response> {
   // Miss — screenshot the embed page (same host as this endpoint) and store the result.
   let png: Uint8Array;
   try {
-    png = await renderEmbedPng(env, embedPageUrl(url.origin, key, canonical));
+    png = await renderEmbedPng(env, embedPageUrl(url.origin, publisher, key, canonical));
   } catch {
     return new Response("Image generation failed", { status: 502 });
   }
@@ -350,15 +416,22 @@ export default {
       return Response.redirect(toAppHost(url), 301);
     }
 
-    // Shareable benchmark image: /embed/{key}.png (generated once via Browser Rendering, cached in R2).
+    // Shareable benchmark image: /embed/{publisher}/{key}.png (generated once via Browser Rendering,
+    // cached in R2). A legacy single-segment /embed/{key}.png 301s to its publisher URL.
     if (url.pathname.startsWith("/embed/")) {
+      const legacyKey = legacyKeyFromEmbedPath(url.pathname);
+      if (legacyKey !== null) return redirectLegacyEmbed(request, env, legacyKey);
       return serveEmbedImage(request, env);
     }
 
     // Data-driven benchmark page: SEO-critical content is server-side-rendered into the shell (see
-    // serveBenchmarkPage); the viewer then hydrates the interactive version on top.
+    // serveBenchmarkPage); the viewer then hydrates the interactive version on top. A legacy
+    // single-segment /benchmarks/{key} 301s to its publisher URL.
     if (isBenchmarkDetail(url.pathname)) {
       return serveBenchmarkPage(request, env);
+    }
+    if (isLegacyBenchmarkDetail(url.pathname)) {
+      return redirectLegacyBenchmark(request, env);
     }
 
     // Marketing pages, viewer assets, images, favicons.

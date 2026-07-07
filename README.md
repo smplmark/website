@@ -21,18 +21,21 @@ timestamp).
 
 1. Redirects the apex (`smplmark.org`) to the canonical `www` host.
 2. Server-side-renders the SEO-critical content into the shell (`public/benchmark.html`) for every
-   `/benchmarks/{key}` (see **SEO / server-side rendering** below).
+   `/benchmarks/{publisher}/{key}` (see **SEO / server-side rendering** below). A legacy
+   single-segment `/benchmarks/{key}` `301`s to its publisher URL.
 3. Serves `/robots.txt` and a dynamic `/sitemap.xml` built from the published-benchmark list.
-4. Generates shareable benchmark images at `/embed/{key}.png` (see **Shareable images** below).
+4. Generates shareable benchmark images at `/embed/{publisher}/{key}.png` (see **Shareable images**
+   below); a legacy `/embed/{key}.png` `301`s to its publisher URL.
 5. Falls through to static assets for everything else (marketing pages, viewer JS/CSS, images).
 
-Pages: `/` (home), `/benchmarks` (list), `/benchmarks/{key}` (data-driven benchmark page), `/about`,
+Pages: `/` (home), `/benchmarks` (list), `/benchmarks/{publisher}/{key}` (data-driven benchmark page,
+where `{publisher}` is the owning account's slug and `{key}` is unique within it), `/about`,
 `/sources`, `/terms`, `/privacy`.
 
-## Shareable images (`/embed/{key}.png`)
+## Shareable images (`/embed/{publisher}/{key}.png`)
 
 Citing a benchmark usually means embedding its chart, so the Worker generates a **1200×630 PNG** of
-any benchmark view. `GET /embed/{key}.png?<view params>` fetches the benchmark, checks R2, and on a
+any benchmark view. `GET /embed/{publisher}/{key}.png?<view params>` fetches the benchmark, checks R2, and on a
 cache miss uses **Browser Rendering** (headless Chrome, `@cloudflare/puppeteer`) to screenshot the
 benchmark page in **embed mode** (`?embed=1`, see `public/js/benchmark.js`) — a chrome-free, branded
 frame showing just the top-12 chart/table. The PNG is stored in **R2** (`smplmark-embeds`) and served
@@ -129,7 +132,7 @@ pinned in `wrangler.jsonc`). There is no database step — the app repo owns D1.
 public/
   index.html               marketing home (lists published benchmarks)
   about/ terms/ privacy/    marketing pages
-  benchmark.html            the data-driven benchmark shell (served for /benchmarks/{key})
+  benchmark.html            the data-driven benchmark shell (served for /benchmarks/{publisher}/{key})
   benchmarks/index.html     the published-benchmark list
   js/benchmark.js           benchmark detail: fetches the app API, renders chart + attribution badge
   js/benchmark-list.js      the card grid on the home + list pages

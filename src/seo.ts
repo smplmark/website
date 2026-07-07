@@ -54,6 +54,7 @@ interface PublishedAs {
 
 export interface BenchmarkAttributes {
   key?: unknown;
+  publisher_slug?: unknown;
   name?: unknown;
   description?: unknown;
   about?: unknown;
@@ -132,8 +133,8 @@ export function pageTitle(a: BenchmarkAttributes): string {
   return `${name} — smplmark`;
 }
 
-export function canonicalUrl(key: string, siteOrigin = SITE_ORIGIN): string {
-  return `${siteOrigin}/benchmarks/${encodeURIComponent(key)}`;
+export function canonicalUrl(publisher: string, key: string, siteOrigin = SITE_ORIGIN): string {
+  return `${siteOrigin}/benchmarks/${encodeURIComponent(publisher)}/${encodeURIComponent(key)}`;
 }
 
 function publisherName(pa: PublishedAs | undefined): string {
@@ -149,13 +150,14 @@ export function datasetJsonLd(
 ): Record<string, unknown> {
   const a = b.attributes;
   const key = str(a.key);
+  const publisher = str(a.publisher_slug);
   const pa = a.published_as;
   const ld: Record<string, unknown> = {
     "@context": "https://schema.org",
     "@type": "Dataset",
     name: str(a.name),
     description: metaDescription(a),
-    url: canonicalUrl(key, opts.siteOrigin),
+    url: canonicalUrl(publisher, key, opts.siteOrigin),
     identifier: key,
     isAccessibleForFree: true,
   };
@@ -211,9 +213,10 @@ export function benchmarkHeadExtras(
 ): string {
   const a = b.attributes;
   const key = str(a.key);
+  const publisher = str(a.publisher_slug);
   const title = pageTitle(a);
   const description = metaDescription(a);
-  const canonical = canonicalUrl(key, opts.siteOrigin);
+  const canonical = canonicalUrl(publisher, key, opts.siteOrigin);
   const jsonLd = escapeJsonForScript(JSON.stringify(datasetJsonLd(b, opts)));
 
   // Social card: for chart/table benchmarks, unfurl the actual chart (a generated 1200×630 image);
@@ -222,7 +225,7 @@ export function benchmarkHeadExtras(
   const xKind = a.observation_schema?.chart?.x_kind;
   const hasChartImage = xKind !== undefined && xKind !== "TIME";
   const image = hasChartImage
-    ? embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, key)
+    ? embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, publisher, key)
     : OG_IMAGE;
   const twitterCard = hasChartImage ? "summary_large_image" : "summary";
 
@@ -334,8 +337,9 @@ export function benchmarkSitemapEntries(
   return benchmarks
     .map((b) => {
       const key = str(b.attributes.key);
-      if (!key) return null;
-      const entry: SitemapEntry = { loc: canonicalUrl(key, siteOrigin) };
+      const publisher = str(b.attributes.publisher_slug);
+      if (!key || !publisher) return null;
+      const entry: SitemapEntry = { loc: canonicalUrl(publisher, key, siteOrigin) };
       const lastmod = str(b.attributes.updated_at);
       if (lastmod) entry.lastmod = lastmod;
       return entry;

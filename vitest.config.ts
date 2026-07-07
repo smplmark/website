@@ -13,6 +13,7 @@ const BENCH_BLENDER = {
   id: "bench-blender-cpu",
   attributes: {
     key: "blender-cpu",
+    publisher_slug: "blender",
     name: "Blender Benchmark — CPU",
     description: "Cycles CPU render performance across community-benchmarked processors.",
     about: "Median render scores for CPUs in the Blender Open Data set.\n\nHigher is better.",
@@ -41,6 +42,7 @@ const BENCH_TIME = {
   id: "bench-time",
   attributes: {
     key: "time-bench",
+    publisher_slug: "timepub",
     name: "Time Bench",
     description: "A time-series benchmark.",
     observation_schema: { metrics: [{ name: "skew_ms" }], derived: [], chart: { x_kind: "TIME" } },
@@ -51,6 +53,7 @@ const BENCH_AMLB = {
   id: "bench-amlb",
   attributes: {
     key: "openml-amlb",
+    publisher_slug: "openml",
     name: "AutoML Benchmark (AMLB)",
     description: "AutoML frameworks compared on classification accuracy.",
     updated_at: "2026-07-04T16:12:44.217Z",
@@ -61,7 +64,12 @@ const BENCH_AMLB = {
 // fallback (head metadata still renders; the body block just omits the target list).
 const BENCH_NOTARGETS = {
   id: "bench-notargets",
-  attributes: { key: "no-targets", name: "No Targets", description: "A benchmark with no target data." },
+  attributes: {
+    key: "no-targets",
+    publisher_slug: "notarg",
+    name: "No Targets",
+    description: "A benchmark with no target data.",
+  },
 };
 
 const TARGETS = {

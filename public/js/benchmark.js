@@ -123,9 +123,14 @@ function wireBadgeImages(container) {
   });
 }
 
-function keyFromPath() {
-  const parts = location.pathname.split("/").filter(Boolean);
-  return decodeURIComponent(parts[1] || "");
+// /benchmarks/{publisher}/{key} — the publisher slug and benchmark key from the address bar. The
+// two together identify the benchmark (keys are unique only within a publisher).
+function refFromPath() {
+  const parts = location.pathname.split("/").filter(Boolean); // ["benchmarks", pub, key]
+  return {
+    publisher: decodeURIComponent(parts[1] || ""),
+    key: decodeURIComponent(parts[2] || ""),
+  };
 }
 
 // The API lives on the app host (app.smplmark.org) — a different origin from this site — so every
@@ -178,7 +183,16 @@ function embedImageUrl() {
     u.searchParams.delete("embed");
     u.hash = "";
     const qs = u.searchParams.toString();
-    return u.origin + "/embed/" + encodeURIComponent(keyFromPath()) + ".png" + (qs ? "?" + qs : "");
+    const ref = refFromPath();
+    return (
+      u.origin +
+      "/embed/" +
+      encodeURIComponent(ref.publisher) +
+      "/" +
+      encodeURIComponent(ref.key) +
+      ".png" +
+      (qs ? "?" + qs : "")
+    );
   } catch (_) {
     return "";
   }
@@ -293,7 +307,7 @@ function renderEmbedChrome() {
   caption.className = "embed-caption";
   caption.innerHTML =
     '<span class="embed-summary">' + esc(embedSummary(a)) + "</span>" +
-    '<span class="embed-url">smplmark.org/benchmarks/' + esc(a.key) + "</span>";
+    '<span class="embed-url">smplmark.org/benchmarks/' + esc(a.publisher_slug) + "/" + esc(a.key) + "</span>";
 
   wrap.insertBefore(title, wrap.firstChild);
   wrap.appendChild(caption);
@@ -315,9 +329,15 @@ let lbState = { sort: null, desc: true, search: "", facets: {}, page: 1 }; // fa
 async function init() {
   const crumb = el("crumb-back");
   if (crumb) crumb.href = withApi("/benchmarks");
-  const key = keyFromPath();
+  const ref = refFromPath();
   try {
-    const doc = await fetchJson(API + "/api/v1/benchmarks?filter[key]=" + encodeURIComponent(key));
+    const doc = await fetchJson(
+      API +
+        "/api/v1/benchmarks?filter[publisher]=" +
+        encodeURIComponent(ref.publisher) +
+        "&filter[key]=" +
+        encodeURIComponent(ref.key),
+    );
     benchmark = doc.data[0];
   } catch (err) {
     el("bm-name").textContent = "Error";
@@ -327,7 +347,8 @@ async function init() {
   }
   if (!benchmark) {
     el("bm-name").textContent = "Benchmark not found";
-    el("load-status").textContent = "No published benchmark with key “" + key + "”.";
+    el("load-status").textContent =
+      "No published benchmark at “" + ref.publisher + "/" + ref.key + "”.";
     return;
   }
 

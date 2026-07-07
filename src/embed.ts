@@ -1,10 +1,12 @@
-// Pure helpers for the shareable-image endpoint (/embed/{key}.png). The Worker screenshots the
-// ?embed=1 benchmark page with Browser Rendering and caches the PNG in R2 — these functions decide
-// the canonical params, the R2 object key, the page URL, and request validity, all offline-testable.
+// Pure helpers for the shareable-image endpoint (/embed/{publisher}/{key}.png). The Worker
+// screenshots the ?embed=1 benchmark page with Browser Rendering and caches the PNG in R2 — these
+// functions decide the canonical params, the R2 object key, the page URL, and request validity, all
+// offline-testable.
 
 // Bump when the embed visual changes so old cached PNGs aren't served under the new template.
 // v2: pinned light palette + light-background logo (was rendering the near-white logo on a light bg).
-export const EMBED_TEMPLATE_VERSION = 2;
+// v3: publisher/key path scheme + vertically-centered chart frame (margins above/below).
+export const EMBED_TEMPLATE_VERSION = 3;
 
 export const EMBED_WIDTH = 1200;
 export const EMBED_HEIGHT = 630;
@@ -33,20 +35,25 @@ export function canonicalEmbedQuery(params: URLSearchParams): string {
   return out.toString();
 }
 
-/** The R2 object key: versioned, namespaced by benchmark key, with the params hash. */
-export function embedObjectKey(benchmarkKey: string, paramsHashHex: string): string {
-  return `v${EMBED_TEMPLATE_VERSION}/${benchmarkKey}/${paramsHashHex}.png`;
+/** The R2 object key: versioned, namespaced by publisher + benchmark key, with the params hash. */
+export function embedObjectKey(publisher: string, benchmarkKey: string, paramsHashHex: string): string {
+  return `v${EMBED_TEMPLATE_VERSION}/${publisher}/${benchmarkKey}/${paramsHashHex}.png`;
 }
 
 /** The page Browser Rendering loads and screenshots. Same host as the /embed endpoint. */
-export function embedPageUrl(siteOrigin: string, benchmarkKey: string, canonicalQuery: string): string {
+export function embedPageUrl(
+  siteOrigin: string,
+  publisher: string,
+  benchmarkKey: string,
+  canonicalQuery: string,
+): string {
   const q = canonicalQuery ? canonicalQuery + "&embed=1" : "embed=1";
-  return `${siteOrigin}/benchmarks/${encodeURIComponent(benchmarkKey)}?${q}#data`;
+  return `${siteOrigin}/benchmarks/${encodeURIComponent(publisher)}/${encodeURIComponent(benchmarkKey)}?${q}#data`;
 }
 
 /** The public image URL (used for og:image and the Share menu). */
-export function embedImageUrl(siteOrigin: string, benchmarkKey: string): string {
-  return `${siteOrigin}/embed/${encodeURIComponent(benchmarkKey)}.png`;
+export function embedImageUrl(siteOrigin: string, publisher: string, benchmarkKey: string): string {
+  return `${siteOrigin}/embed/${encodeURIComponent(publisher)}/${encodeURIComponent(benchmarkKey)}.png`;
 }
 
 export function isTimeChart(chartXKind: unknown): boolean {
@@ -65,8 +72,17 @@ export function validateEmbedParams(chartXKind: unknown, params: URLSearchParams
   return null;
 }
 
-/** Parse the benchmark key out of an /embed/{key}.png path, or null if it doesn't match. */
-export function keyFromEmbedPath(pathname: string): string | null {
-  const m = /^\/embed\/(.+)\.png$/.exec(pathname);
+/**
+ * Parse the publisher + benchmark key out of an /embed/{publisher}/{key}.png path, or null if it
+ * doesn't match (e.g. the legacy single-segment form, which the Worker redirects instead).
+ */
+export function refFromEmbedPath(pathname: string): { publisher: string; key: string } | null {
+  const m = /^\/embed\/([^/]+)\/([^/]+)\.png$/.exec(pathname);
+  return m ? { publisher: decodeURIComponent(m[1]), key: decodeURIComponent(m[2]) } : null;
+}
+
+/** Parse the key out of a legacy /embed/{key}.png path (single segment), for the redirect. */
+export function legacyKeyFromEmbedPath(pathname: string): string | null {
+  const m = /^\/embed\/([^/]+)\.png$/.exec(pathname);
   return m ? decodeURIComponent(m[1]) : null;
 }

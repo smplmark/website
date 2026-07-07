@@ -25,6 +25,7 @@ function bench(over: Partial<BenchmarkResource["attributes"]> = {}, id = "b1"): 
     id,
     attributes: {
       key: "blender-cpu",
+      publisher_slug: "blender",
       name: "Blender Benchmark — CPU",
       description: "Cycles CPU render performance across community processors.",
       about: "Median render scores.\n\nHigher is better.",
@@ -101,8 +102,10 @@ describe("pageTitle / canonicalUrl", () => {
   it("falls back to 'Benchmark' when unnamed", () => {
     expect(pageTitle(bench({ name: "" }).attributes)).toBe("Benchmark — smplmark");
   });
-  it("URL-encodes the key in the canonical URL", () => {
-    expect(canonicalUrl("a b/c")).toBe("https://www.smplmark.org/benchmarks/a%20b%2Fc");
+  it("URL-encodes the publisher + key in the canonical URL", () => {
+    expect(canonicalUrl("pub x", "a b/c")).toBe(
+      "https://www.smplmark.org/benchmarks/pub%20x/a%20b%2Fc",
+    );
   });
 });
 
@@ -111,7 +114,7 @@ describe("datasetJsonLd", () => {
     const ld = datasetJsonLd(bench(), { apiOrigin: API });
     expect(ld["@type"]).toBe("Dataset");
     expect(ld.name).toBe("Blender Benchmark — CPU");
-    expect(ld.url).toBe("https://www.smplmark.org/benchmarks/blender-cpu");
+    expect(ld.url).toBe("https://www.smplmark.org/benchmarks/blender/blender-cpu");
     expect(ld.identifier).toBe("blender-cpu");
     expect(ld.keywords).toEqual(["blender", "cpu", "Hardware"]);
     expect(ld.datePublished).toBe("2026-07-04T15:51:02.616Z");
@@ -196,7 +199,7 @@ describe("benchmarkHeadExtras", () => {
   it("includes description, canonical, OG, Twitter, and JSON-LD", () => {
     const head = benchmarkHeadExtras(bench(), { apiOrigin: API });
     expect(head).toContain('<meta name="description" content="Cycles CPU render performance');
-    expect(head).toContain('<link rel="canonical" href="https://www.smplmark.org/benchmarks/blender-cpu"');
+    expect(head).toContain('<link rel="canonical" href="https://www.smplmark.org/benchmarks/blender/blender-cpu"');
     expect(head).toContain('<meta name="robots" content="index, follow"');
     expect(head).toContain('<meta property="og:title" content="Blender Benchmark — CPU — smplmark"');
     expect(head).toContain('<meta property="og:type" content="article"');
@@ -230,7 +233,7 @@ describe("benchmarkHeadExtras", () => {
       bench({ observation_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "CATEGORY" } } }),
       { apiOrigin: API },
     );
-    expect(cat).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender-cpu.png"');
+    expect(cat).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender/blender-cpu.png"');
     expect(cat).toContain('<meta name="twitter:card" content="summary_large_image"');
   });
 
@@ -335,15 +338,16 @@ describe("sitemap + robots", () => {
     expect(locs).toHaveLength(6);
   });
 
-  it("benchmark entries carry canonical loc + lastmod, skipping keyless rows", () => {
+  it("benchmark entries carry canonical loc + lastmod, skipping rows missing a key or publisher", () => {
     const entries = benchmarkSitemapEntries([
       bench({ key: "a", updated_at: "2026-01-01T00:00:00Z" }, "b-a"),
-      bench({ key: "", updated_at: "2026-01-02T00:00:00Z" }, "b-b"),
+      bench({ key: "", updated_at: "2026-01-02T00:00:00Z" }, "b-b"), // no key → skipped
       bench({ key: "c", updated_at: "" }, "b-c"),
+      bench({ key: "d", publisher_slug: "", updated_at: "2026-01-03T00:00:00Z" }, "b-d"), // no publisher → skipped
     ]);
     expect(entries).toEqual([
-      { loc: "https://www.smplmark.org/benchmarks/a", lastmod: "2026-01-01T00:00:00Z" },
-      { loc: "https://www.smplmark.org/benchmarks/c" },
+      { loc: "https://www.smplmark.org/benchmarks/blender/a", lastmod: "2026-01-01T00:00:00Z" },
+      { loc: "https://www.smplmark.org/benchmarks/blender/c" },
     ]);
   });
 

@@ -6,7 +6,8 @@ import {
   embedObjectKey,
   embedPageUrl,
   isTimeChart,
-  keyFromEmbedPath,
+  legacyKeyFromEmbedPath,
+  refFromEmbedPath,
   validateEmbedParams,
 } from "../src/embed";
 
@@ -35,30 +36,30 @@ describe("canonicalEmbedQuery", () => {
 });
 
 describe("embedObjectKey", () => {
-  it("is versioned and namespaced by benchmark key", () => {
-    expect(embedObjectKey("blender-cpu", "abc123")).toBe(
-      `v${EMBED_TEMPLATE_VERSION}/blender-cpu/abc123.png`,
+  it("is versioned and namespaced by publisher + benchmark key", () => {
+    expect(embedObjectKey("blender", "blender-cpu", "abc123")).toBe(
+      `v${EMBED_TEMPLATE_VERSION}/blender/blender-cpu/abc123.png`,
     );
   });
 });
 
 describe("embedPageUrl", () => {
-  it("appends embed=1 and the #data hash, encoding the key", () => {
-    expect(embedPageUrl("https://www.smplmark.org", "spec cpu", "view=table")).toBe(
-      "https://www.smplmark.org/benchmarks/spec%20cpu?view=table&embed=1#data",
+  it("appends embed=1 and the #data hash, encoding the publisher + key", () => {
+    expect(embedPageUrl("https://www.smplmark.org", "spec", "spec cpu", "view=table")).toBe(
+      "https://www.smplmark.org/benchmarks/spec/spec%20cpu?view=table&embed=1#data",
     );
   });
   it("handles the paramless case", () => {
-    expect(embedPageUrl("https://www.smplmark.org", "blender-cpu", "")).toBe(
-      "https://www.smplmark.org/benchmarks/blender-cpu?embed=1#data",
+    expect(embedPageUrl("https://www.smplmark.org", "blender", "blender-cpu", "")).toBe(
+      "https://www.smplmark.org/benchmarks/blender/blender-cpu?embed=1#data",
     );
   });
 });
 
 describe("embedImageUrl", () => {
-  it("points at the /embed/{key}.png endpoint", () => {
-    expect(embedImageUrl("https://www.smplmark.org", "blender-cpu")).toBe(
-      "https://www.smplmark.org/embed/blender-cpu.png",
+  it("points at the /embed/{publisher}/{key}.png endpoint", () => {
+    expect(embedImageUrl("https://www.smplmark.org", "blender", "blender-cpu")).toBe(
+      "https://www.smplmark.org/embed/blender/blender-cpu.png",
     );
   });
 });
@@ -79,14 +80,33 @@ describe("isTimeChart / validateEmbedParams", () => {
   });
 });
 
-describe("keyFromEmbedPath", () => {
-  it("parses /embed/{key}.png, decoding the key", () => {
-    expect(keyFromEmbedPath("/embed/blender-cpu.png")).toBe("blender-cpu");
-    expect(keyFromEmbedPath("/embed/a%2Fb.png")).toBe("a/b");
+describe("refFromEmbedPath", () => {
+  it("parses /embed/{publisher}/{key}.png, decoding both segments", () => {
+    expect(refFromEmbedPath("/embed/blender/blender-cpu.png")).toEqual({
+      publisher: "blender",
+      key: "blender-cpu",
+    });
+    expect(refFromEmbedPath("/embed/spec/spec%20cpu.png")).toEqual({
+      publisher: "spec",
+      key: "spec cpu",
+    });
   });
-  it("returns null for non-matching paths", () => {
-    expect(keyFromEmbedPath("/embed/")).toBeNull();
-    expect(keyFromEmbedPath("/embed/x.jpg")).toBeNull();
-    expect(keyFromEmbedPath("/benchmarks/x")).toBeNull();
+  it("returns null for the legacy single-segment form and other non-matches", () => {
+    expect(refFromEmbedPath("/embed/blender-cpu.png")).toBeNull(); // legacy → redirected, not served
+    expect(refFromEmbedPath("/embed/")).toBeNull();
+    expect(refFromEmbedPath("/embed/a/b.jpg")).toBeNull();
+    expect(refFromEmbedPath("/benchmarks/a/b")).toBeNull();
+  });
+});
+
+describe("legacyKeyFromEmbedPath", () => {
+  it("parses the legacy single-segment /embed/{key}.png", () => {
+    expect(legacyKeyFromEmbedPath("/embed/blender-cpu.png")).toBe("blender-cpu");
+    expect(legacyKeyFromEmbedPath("/embed/a%2Fb.png")).toBe("a/b");
+  });
+  it("returns null for the two-segment form and other non-matches", () => {
+    expect(legacyKeyFromEmbedPath("/embed/blender/blender-cpu.png")).toBeNull();
+    expect(legacyKeyFromEmbedPath("/embed/")).toBeNull();
+    expect(legacyKeyFromEmbedPath("/embed/x.jpg")).toBeNull();
   });
 });

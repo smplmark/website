@@ -2,7 +2,8 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { embedObjectKey } from "../src/embed";
 
-// The website Worker (src/index.ts): apex → www, the /benchmarks/{key} shell, and static fallthrough.
+// The website Worker (src/index.ts): apex → www, the /benchmarks/{publisher}/{key} shell (plus the
+// legacy single-segment 301), the /embed image endpoint, and static fallthrough.
 function noFollow(url: string) {
   return SELF.fetch(url, { redirect: "manual" });
 }
@@ -13,16 +14,16 @@ async function sha256hex(s: string): Promise<string> {
 }
 
 describe("website worker", () => {
-  it("redirects the apex to www (301)", async () => {
-    const res = await noFollow("https://smplmark.org/benchmarks/scheduler-latency");
+  it("redirects the apex to www (301), before any benchmark routing", async () => {
+    const res = await noFollow("https://smplmark.org/benchmarks/blender/blender-cpu");
     expect(res.status).toBe(301);
     expect(res.headers.get("location")).toBe(
-      "https://www.smplmark.org/benchmarks/scheduler-latency",
+      "https://www.smplmark.org/benchmarks/blender/blender-cpu",
     );
   });
 
   it("server-side-renders a found benchmark into the shell (title, meta, JSON-LD, body)", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/blender-cpu");
+    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/blender/blender-cpu");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     expect(res.headers.get("cache-control")).toContain("max-age=300");
@@ -35,10 +36,10 @@ describe("website worker", () => {
     // SEO head injection.
     expect(body).toContain("<title>Blender Benchmark — CPU — smplmark</title>");
     expect(body).toContain('<meta name="description" content="Cycles CPU render performance');
-    expect(body).toContain('<link rel="canonical" href="https://www.smplmark.org/benchmarks/blender-cpu"');
+    expect(body).toContain('<link rel="canonical" href="https://www.smplmark.org/benchmarks/blender/blender-cpu"');
     expect(body).toContain('<meta property="og:title"');
     // A CATEGORY benchmark unfurls its own chart image (not the logo) via a large Twitter card.
-    expect(body).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender-cpu.png"');
+    expect(body).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender/blender-cpu.png"');
     expect(body).toContain('<meta name="twitter:card" content="summary_large_image"');
     expect(body).toContain('<script type="application/ld+json">');
     expect(body).toContain('"@type":"Dataset"');
@@ -54,7 +55,7 @@ describe("website worker", () => {
   });
 
   it("returns a real 404 (noindex) for an unknown benchmark key", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/ghost-benchmark");
+    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/ghost/ghost-benchmark");
     expect(res.status).toBe(404);
     const body = await res.text();
     expect(body).toContain("<title>Benchmark not found — smplmark</title>");
@@ -62,9 +63,23 @@ describe("website worker", () => {
     expect(body).toContain('id="bm-name"'); // shell still served; the viewer shows the not-found state
   });
 
+  it("301-redirects a legacy /benchmarks/{key} to its publisher URL", async () => {
+    const res = await noFollow("https://www.smplmark.org/benchmarks/blender-cpu");
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe(
+      "https://www.smplmark.org/benchmarks/blender/blender-cpu",
+    );
+  });
+
+  it("serves a 404 shell for a legacy /benchmarks/{key} that resolves to nothing", async () => {
+    const res = await noFollow("https://www.smplmark.org/benchmarks/ghost-benchmark");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("<title>Benchmark not found — smplmark</title>");
+  });
+
   it("falls back to the plain shell (200) when the API is unreachable", async () => {
     // down-benchmark's lookup 503s → SSR enrichment is skipped, the shell is served as-is.
-    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/down-benchmark");
+    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/downpub/down-benchmark");
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain('id="bm-name"');
@@ -73,7 +88,7 @@ describe("website worker", () => {
   });
 
   it("renders head metadata even when the targets fetch fails (best-effort body)", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/no-targets");
+    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/notarg/no-targets");
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("<title>No Targets — smplmark</title>");
@@ -82,7 +97,7 @@ describe("website worker", () => {
   });
 
   it("renders a found-but-attributeless row without crashing, skipping malformed targets", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/bare-attributes");
+    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/barepub/bare-attributes");
     expect(res.status).toBe(200);
     const body = await res.text();
     // No attributes → a generic title, and the two valid targets counted (the id-less one skipped).
@@ -147,22 +162,30 @@ describe("website worker", () => {
 
   it("serves a cached embed image straight from R2 (cache hit)", async () => {
     // No params → empty canonical query → the empty-string SHA-256 keys the object.
-    const objectKey = embedObjectKey("blender-cpu", await sha256hex(""));
+    const objectKey = embedObjectKey("blender", "blender-cpu", await sha256hex(""));
     await env.EMBEDS.put(objectKey, new Uint8Array([0x89, 0x50, 0x4e, 0x47])); // PNG magic
-    const res = await SELF.fetch("https://www.smplmark.org/embed/blender-cpu.png");
+    const res = await SELF.fetch("https://www.smplmark.org/embed/blender/blender-cpu.png");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/png");
     expect(res.headers.get("cache-control")).toContain("immutable");
     expect(new Uint8Array(await res.arrayBuffer())[0]).toBe(0x89); // the stored bytes, served back
   });
 
+  it("301-redirects a legacy /embed/{key}.png to its publisher URL", async () => {
+    const res = await noFollow("https://www.smplmark.org/embed/blender-cpu.png");
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe(
+      "https://www.smplmark.org/embed/blender/blender-cpu.png",
+    );
+  });
+
   it("404s an embed image for an unknown benchmark key", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/embed/ghost-benchmark.png");
+    const res = await SELF.fetch("https://www.smplmark.org/embed/ghost/ghost-benchmark.png");
     expect(res.status).toBe(404);
   });
 
   it("400s a time-series embed image without a bounded range", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/embed/time-bench.png");
+    const res = await SELF.fetch("https://www.smplmark.org/embed/timepub/time-bench.png");
     expect(res.status).toBe(400);
     expect(await res.text()).toMatch(/bounded range/);
   });
@@ -177,8 +200,8 @@ describe("website worker", () => {
     expect(body).toContain("<loc>https://www.smplmark.org/</loc>");
     expect(body).toContain("<loc>https://www.smplmark.org/about</loc>");
     // Published benchmarks (from the mocked list) with lastmod.
-    expect(body).toContain("<loc>https://www.smplmark.org/benchmarks/blender-cpu</loc>");
-    expect(body).toContain("<loc>https://www.smplmark.org/benchmarks/openml-amlb</loc>");
+    expect(body).toContain("<loc>https://www.smplmark.org/benchmarks/blender/blender-cpu</loc>");
+    expect(body).toContain("<loc>https://www.smplmark.org/benchmarks/openml/openml-amlb</loc>");
     expect(body).toContain("<lastmod>2026-07-04T16:00:00.000Z</lastmod>");
   });
 });

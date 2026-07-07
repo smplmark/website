@@ -1,7 +1,7 @@
 "use strict";
 
 // Populates a #benchmark-grid with published benchmarks from the API. Fully data-driven:
-// each card links to /benchmarks/{key}. Used by the home page and the /benchmarks list.
+// each card links to /benchmarks/{publisher}/{key}. Used by the home page and the /benchmarks list.
 //
 // On the /benchmarks page (which carries a #benchmark-filters container) the grid is filterable by
 // category and tag via the API's filter[category] / filter[tag] params, driven by the ?category=
@@ -314,7 +314,7 @@ async function load() {
               ? ' <span class="pill live">live</span>'
               : "";
         return `
-          <a class="card" href="${esc(withApi("/benchmarks/" + encodeURIComponent(a.key)))}">
+          <a class="card" href="${esc(withApi("/benchmarks/" + encodeURIComponent(a.publisher_slug) + "/" + encodeURIComponent(a.key)))}">
             <h3>${esc(a.name)}${pill}</h3>
             <p>${esc(a.description || "")}</p>
             ${cardChips(a)}
