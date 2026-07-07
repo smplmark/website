@@ -396,12 +396,13 @@ async function init() {
     } catch (_) {
       targets = [];
     }
-    // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing and
-    // the run→target mapping the chart grouping needs. Best-effort.
+    // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing. A run
+    // is a benchmark child now (it spans targets); the chart groups by each measurement's own target,
+    // so no run→target map is needed. Best-effort.
     runs = [];
     try {
       const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
-      runs = res.data.map((r) => ({ ...r, targetId: r.attributes.target }));
+      runs = res.data;
       runsTruncated = res.truncated;
     } catch (_) {}
   }
@@ -646,10 +647,10 @@ async function renderStats() {
   const a = benchmark.attributes;
   box.innerHTML = '<p class="muted">Loading…</p>';
 
-  const [nTargets, nRuns, nObs] = await Promise.all([
+  const [nTargets, nRuns, nMeas] = await Promise.all([
     fetchTotal("targets"),
     fetchTotal("runs"),
-    fetchTotal("observations"),
+    fetchTotal("measurements"),
   ]);
 
   const dateOrDash = (iso) => (iso ? esc(fmtDate(iso)) : "—");
@@ -666,9 +667,9 @@ async function renderStats() {
     statsRow("Status", status) +
     statsRow("Targets", num(nTargets)) +
     statsRow("Runs", num(nRuns)) +
-    statsRow("Observations", num(nObs)) +
-    statsRow("Runs per target", perParent(nRuns, nTargets)) +
-    statsRow("Observations per run", perParent(nObs, nRuns)) +
+    statsRow("Measurements", num(nMeas)) +
+    statsRow("Measurements per target", perParent(nMeas, nTargets)) +
+    statsRow("Measurements per run", perParent(nMeas, nRuns)) +
     "</tbody></table>";
 }
 
@@ -909,24 +910,23 @@ function currentRange() {
   return "[" + (from || "*") + "," + (to || "*") + ")";
 }
 
-function observationsUrl(scopeParam, scopeId, range) {
-  let url = API + "/api/v1/observations?filter[" + scopeParam + "]=" + encodeURIComponent(scopeId);
+function measurementsUrl(scopeParam, scopeId, range) {
+  let url = API + "/api/v1/measurements?filter[" + scopeParam + "]=" + encodeURIComponent(scopeId);
   if (range) url += "&filter[created_at]=" + encodeURIComponent(range);
   return url;
 }
 
-// One benchmark-wide observations fetch per range (cached), grouped per target via the runs map —
-// instead of one request per target.
-const observationCache = new Map(); // range key → { byTarget: Map<targetId, obs[]>, truncated }
+// One benchmark-wide measurements fetch per range (cached), grouped by each measurement's own target
+// (a measurement names its target directly) — instead of one request per target.
+const observationCache = new Map(); // range key → { byTarget: Map<targetId, measurement[]>, truncated }
 async function observationsByTarget(range) {
   const cacheKey = range || "all";
   if (observationCache.has(cacheKey)) return observationCache.get(cacheKey);
-  const targetByRun = new Map(runs.map((r) => [r.id, r.targetId]));
-  const res = await fetchAllPages(observationsUrl("benchmark", benchmark.id, range));
+  const res = await fetchAllPages(measurementsUrl("benchmark", benchmark.id, range));
   const byTarget = new Map();
   for (const s of res.data) {
-    const targetId = targetByRun.get(s.attributes.run);
-    if (targetId === undefined) continue; // run beyond the runs page ceiling
+    const targetId = s.attributes.target;
+    if (targetId === undefined) continue;
     let list = byTarget.get(targetId);
     if (!list) { list = []; byTarget.set(targetId, list); }
     list.push(s);
@@ -1170,22 +1170,22 @@ async function drawChart() {
     else renderXY(seriesTargets, perTargetPoints, yKey, chartMode === "TIME");
     const total = perTargetPoints.reduce((n, pts) => n + pts.length, 0);
     el("chart-status").textContent =
-      total + " observations · " + seriesTargets.length + " target(s) · metric “" + yKey + "” · " +
+      total + " measurements · " + seriesTargets.length + " target(s) · metric “" + yKey + "” · " +
       chartMode.toLowerCase() + " chart" +
-      (truncated ? " · large dataset — first " + MAX_PAGES * PAGE_SIZE + " observations loaded" : "") +
+      (truncated ? " · large dataset — first " + MAX_PAGES * PAGE_SIZE + " measurements loaded" : "") +
       seriesNote + ".";
   } catch (err) {
     destroyChart();
     el("chart-status").className = "status error";
-    el("chart-status").textContent = "Failed to load observations: " + err.message;
+    el("chart-status").textContent = "Failed to load measurements: " + err.message;
   }
 }
 
 function currentScopeUrl(range) {
   const active = activeTargets();
   return active.length === 1
-    ? observationsUrl("target", active[0].id, range)
-    : observationsUrl("benchmark", benchmark.id, range);
+    ? measurementsUrl("target", active[0].id, range)
+    : measurementsUrl("benchmark", benchmark.id, range);
 }
 
 // CSV and JSON behave identically: fetch the current scope, download as a file.

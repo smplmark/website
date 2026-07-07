@@ -44,7 +44,7 @@ describe("website worker", () => {
     expect(body).toContain('<script type="application/ld+json">');
     expect(body).toContain('"@type":"Dataset"');
     expect(body).toContain(
-      '"contentUrl":"https://app.smplmark.org/api/v1/observations?filter[benchmark]=bench-blender-cpu"',
+      '"contentUrl":"https://app.smplmark.org/api/v1/measurements?filter[benchmark]=bench-blender-cpu"',
     );
 
     // Crawlable body: the SSR content block is filled with real text + the target list.

@@ -131,7 +131,7 @@ describe("datasetJsonLd", () => {
       {
         "@type": "DataDownload",
         encodingFormat: "application/json",
-        contentUrl: `${API}/api/v1/observations?filter[benchmark]=b1`,
+        contentUrl: `${API}/api/v1/measurements?filter[benchmark]=b1`,
       },
     ]);
   });

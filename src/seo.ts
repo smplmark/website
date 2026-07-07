@@ -197,7 +197,7 @@ export function datasetJsonLd(
     {
       "@type": "DataDownload",
       encodingFormat: "application/json",
-      contentUrl: `${opts.apiOrigin}/api/v1/observations?filter[benchmark]=${encodeURIComponent(b.id)}`,
+      contentUrl: `${opts.apiOrigin}/api/v1/measurements?filter[benchmark]=${encodeURIComponent(b.id)}`,
     },
   ];
 
