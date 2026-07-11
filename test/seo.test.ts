@@ -120,7 +120,11 @@ describe("datasetJsonLd", () => {
     expect(ld.datePublished).toBe("2026-07-04T15:51:02.616Z");
     expect(ld.dateModified).toBe("2026-07-04T16:00:00.000Z");
     expect(ld.variableMeasured).toEqual(["median_score", "count"]);
-    expect(ld.license).toBe("CC0-1.0");
+    expect(ld.license).toEqual({
+      "@type": "CreativeWork",
+      name: "CC0-1.0",
+      url: "https://creativecommons.org/publicdomain/zero/1.0/",
+    });
     expect(ld.isBasedOn).toBe("https://opendata.blender.org");
     expect(ld.creator).toEqual({
       "@type": "Organization",
@@ -178,6 +182,14 @@ describe("datasetJsonLd", () => {
     expect(ld.creator).toEqual({ "@type": "Organization", name: "Src" });
     expect(ld.license).toBeUndefined();
     expect(ld.isBasedOn).toBeUndefined();
+  });
+
+  it("emits a name-only CreativeWork license when the identifier has no canonical URL", () => {
+    const ld = datasetJsonLd(
+      bench({ published_as: { kind: "INGESTED", source_name: "SPEC", source_url: "https://spec.org", license: "SPEC Fair Use Rules" } }),
+      { apiOrigin: API },
+    );
+    expect(ld.license).toEqual({ "@type": "CreativeWork", name: "SPEC Fair Use Rules" });
   });
 
   it("omits the creator when the publisher has no name, and tolerates a non-array tags value", () => {

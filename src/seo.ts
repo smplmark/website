@@ -144,6 +144,20 @@ function publisherName(pa: PublishedAs | undefined): string {
 
 // ── JSON-LD Dataset (Google Dataset Search) ──────────────────────────────────
 
+// Canonical URLs for the license identifiers our ingested sources carry, so schema.org's
+// Dataset.license (which wants a URL or a CreativeWork — never a bare identifier) can point at the
+// real license text. Anything not listed still emits as a name-only CreativeWork (a valid object
+// type), which is what keeps Google's "Invalid object type for field license" report clean.
+const LICENSE_URLS: Record<string, string> = {
+  "CC0-1.0": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "CC-BY-4.0": "https://creativecommons.org/licenses/by/4.0/",
+  "CC-BY-SA-4.0": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "CC-BY-ND-4.0": "https://creativecommons.org/licenses/by-nd/4.0/",
+  "CC-BY-NC-4.0": "https://creativecommons.org/licenses/by-nc/4.0/",
+  "CC-BY-NC-SA-4.0": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "CC-BY-NC-ND-4.0": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+};
+
 export function datasetJsonLd(
   b: BenchmarkResource,
   opts: { siteOrigin?: string; apiOrigin: string },
@@ -187,7 +201,13 @@ export function datasetJsonLd(
 
   if (pa && str(pa.kind) === "INGESTED") {
     const license = str(pa.license);
-    if (license) ld.license = license;
+    if (license) {
+      // A CreativeWork (never a bare identifier string), with the canonical license URL when known.
+      const work: Record<string, unknown> = { "@type": "CreativeWork", name: license };
+      const licenseUrl = LICENSE_URLS[license];
+      if (licenseUrl) work.url = licenseUrl;
+      ld.license = work;
+    }
     const sourceUrl = str(pa.source_url);
     if (sourceUrl) ld.isBasedOn = sourceUrl;
   }
