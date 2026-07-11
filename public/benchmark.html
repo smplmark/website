@@ -46,27 +46,25 @@
 
       <div id="tabs-wrap" hidden>
         <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="overview">Overview</button>
-          <button class="tab" data-tab="data">Data</button>
+          <button class="tab" data-tab="overview">Overview</button>
+          <button class="tab active" data-tab="data">Data</button>
           <button class="tab" data-tab="metrics">Metrics</button>
           <button class="tab" data-tab="methodology">Methodology</button>
-          <button class="tab" data-tab="publisher">Publisher</button>
           <button class="tab" data-tab="stats">Stats</button>
+          <button class="tab" data-tab="publisher">Publisher</button>
         </div>
 
-        <section class="tab-panel active" data-panel="overview">
+        <section class="tab-panel" data-panel="overview">
           <div class="prose" id="overview-about"></div>
         </section>
 
-        <section class="tab-panel" data-panel="data">
+        <section class="tab-panel active" data-panel="data">
           <div class="data-layout">
-            <aside class="target-rail" id="target-rail"></aside>
+            <aside class="filter-panel" id="filter-panel"></aside>
             <div class="data-main">
               <div class="controls">
-                <div class="field" id="metric-field" hidden>
-                  <label>Metrics</label>
-                  <div class="dropdown" id="metric-dropdown"></div>
-                </div>
+                <button type="button" class="btn filter-toggle" id="filter-toggle" title="Filters" aria-label="Toggle filters" aria-pressed="true" hidden></button>
+                <div class="bar-controls" id="bar-controls"></div>
                 <div class="field" id="range-field">
                   <label for="range">Range</label>
                   <select id="range">
@@ -77,6 +75,7 @@
                   </select>
                 </div>
                 <div class="spacer"></div>
+                <div class="view-controls" id="view-controls"></div>
                 <div class="links" id="chart-actions"></div>
               </div>
               <div class="chart-panel">
@@ -96,12 +95,12 @@
           <div class="prose" id="methodology-body"></div>
         </section>
 
-        <section class="tab-panel" data-panel="publisher">
-          <div class="publisher" id="publisher-body"></div>
-        </section>
-
         <section class="tab-panel" data-panel="stats">
           <div id="stats-body"></div>
+        </section>
+
+        <section class="tab-panel" data-panel="publisher">
+          <div class="publisher" id="publisher-body"></div>
         </section>
       </div>
 

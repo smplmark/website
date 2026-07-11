@@ -164,7 +164,7 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 
 /* ── Category (bar) chart ── */
 .bars { display: flex; flex-direction: column; gap: 12px; padding: 8px 4px; }
-.bar-row { display: grid; grid-template-columns: 140px 1fr 90px; align-items: center; gap: 12px; }
+.bar-row { display: grid; grid-template-columns: minmax(160px, 40%) 1fr 96px; align-items: center; gap: 14px; }
 .bar-label { font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-track { background: var(--panel-2); border-radius: 6px; height: 22px; overflow: hidden; }
 .bar-fill { height: 100%; border-radius: 6px; min-width: 2px; transition: width 0.3s ease; }
@@ -235,22 +235,46 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .prose a { color: var(--accent); }
 .prose a:hover { text-decoration: underline; }
 
-/* Metrics tab: a compact table (name · unit · description), left-anchored like the rest of the page. */
-.metrics-table { width: 100%; max-width: var(--contentw); border-collapse: collapse; font-size: 14px; }
+/* Metrics tab: a compact table (name · unit · description) presented as a bordered, rounded card
+   like the publisher/chart panels. `separate` + overflow:hidden lets the corners clip to --radius. */
+.metrics-table {
+  width: 100%;
+  max-width: var(--contentw);
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+  font-size: 14px;
+}
 .metrics-table th, .metrics-table td {
   text-align: left;
-  padding: 10px 16px 10px 0;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
-.metrics-table th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+.metrics-table thead th { background: var(--panel-2); color: var(--muted); font-weight: 600; white-space: nowrap; }
+.metrics-table tbody tr:last-child td { border-bottom: none; }
+.metrics-table tr:last-child td { border-bottom: none; }
 .metrics-table .metric-name { font-family: var(--mono); color: var(--text); white-space: nowrap; }
 .metrics-table .metric-unit { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
 .metrics-table .metric-desc { color: var(--muted); }
 
-/* Stats tab: a two-column label/value table (dates + the target/run/observation counts). */
-.stats-table { border-collapse: collapse; font-size: 14px; max-width: var(--contentw); }
-.stats-table td { padding: 10px 16px 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* Stats tab: a two-column label/value table (dates + the target/run/measurement counts), boxed the
+   same way as the metrics card above. */
+.stats-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+  font-size: 14px;
+  max-width: var(--contentw);
+}
+.stats-table td { padding: 10px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.stats-table tr:last-child td { border-bottom: none; }
 .stats-table .stat-label { color: var(--muted); white-space: nowrap; padding-right: 40px; }
 .stats-table .stat-value { font-family: var(--mono); color: var(--text); white-space: nowrap; }
 
@@ -448,9 +472,18 @@ footer.site a.gh svg { display: block; }
   background: var(--accent); color: #fff; font-weight: 600;
 }
 
-/* ── Data tab: target rail + main area ── */
-.data-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 22px; align-items: start; }
-@media (max-width: 800px) { .data-layout { grid-template-columns: 1fr; } }
+/* ── Data tab: collapsible left filter panel + main area. The panel slides in/out to the left; the
+   grid column (and the gap) animate so the data area grows/shrinks with it. Nothing inside the panel
+   scrolls — the whole page scrolls instead. ── */
+.data-layout {
+  display: grid; grid-template-columns: 262px minmax(0, 1fr); gap: 22px; align-items: start;
+  transition: grid-template-columns 0.26s ease, gap 0.26s ease;
+}
+.data-layout.panel-collapsed { grid-template-columns: 0 minmax(0, 1fr); gap: 0; }
+.data-main { min-width: 0; }
+@media (max-width: 800px) {
+  .data-layout, .data-layout.panel-collapsed { grid-template-columns: minmax(0, 1fr); }
+}
 .target-rail {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
   padding: 12px; max-height: 560px; display: flex; flex-direction: column;
@@ -548,6 +581,7 @@ body.embed #load-status,
 body.embed .tab-panel:not([data-panel="data"]),
 body.embed .target-rail,
 body.embed .lb-facets,
+body.embed .filter-panel,
 body.embed .controls,
 body.embed .lb-controls,
 body.embed .lb-pager,
@@ -564,10 +598,12 @@ body.embed .data-layout { display: block; height: 100%; }
 body.embed .data-main { height: 100%; display: flex; flex-direction: column; }
 body.embed .chart-panel { flex: 1; min-height: 0; }
 body.embed #chart, body.embed #lb-main { height: 100%; }
+body.embed #chart { display: flex; flex-direction: column; }
 body.embed #lb-main .table-wrap, body.embed #chart .table-wrap { overflow: hidden; }
-/* Distribute the (up to 12) bars evenly across the full frame height — even spacing top-to-bottom,
-   no dead space after the last bar (space-evenly gives equal margins at the ends too). */
-body.embed .bars { height: 100%; gap: 0; padding: 0; justify-content: space-evenly; }
+/* The metric title sits above the bars (naming what the image shows); the bars fill the rest and
+   distribute evenly across it (space-evenly gives equal margins at the ends too). */
+body.embed .bars-title { flex: none; margin-bottom: 6px; }
+body.embed .bars { flex: 1; min-height: 0; gap: 0; padding: 0; justify-content: space-evenly; }
 
 .embed-title {
   position: absolute; top: 0; left: 0; right: 0; height: 60px;
@@ -600,3 +636,219 @@ body.embed .bars { height: 100%; gap: 0; padding: 0; justify-content: space-even
 .source-table td:nth-child(2) { min-width: 220px; }
 .source-table td:nth-child(3), .source-table td:last-child { white-space: nowrap; }
 .source-table .src-host { color: var(--muted); font-size: 12px; font-weight: 400; margin-top: 2px; }
+
+/* ── Filter funnel button (opens the drawer) ── */
+.filter-btn { display: inline-flex; align-items: center; gap: 7px; height: var(--control-h); }
+.filter-btn svg { opacity: 0.75; }
+.filter-btn.has-filters { border-color: var(--accent); color: var(--accent); }
+.filter-btn.has-filters svg { opacity: 1; color: var(--accent); }
+.filter-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* ── Bars header: names the plotted metric (a picker when >1) over the value column + sort dir ── */
+.bars-head { display: flex; justify-content: flex-end; align-items: center; padding: 2px 4px 12px; }
+.bars-head-metric { display: inline-flex; align-items: center; gap: 8px; }
+.bars-metric-label { font-size: 13px; color: var(--muted); font-family: var(--mono); }
+.bars-metric-select select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 7px; height: 30px; padding: 0 8px; font-size: 13px; font-family: var(--sans);
+}
+.bars-metric-select select:focus { outline: none; border-color: var(--accent); }
+.dir-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 7px; cursor: pointer;
+}
+.dir-btn:hover { border-color: var(--accent); color: var(--accent); }
+.vh {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* The windowing sentinel is a zero-height marker the observer watches; it must not add layout. */
+.scroll-sentinel { height: 1px; }
+tr.scroll-sentinel { height: 0; }
+tr.scroll-sentinel td { padding: 0; border: none; height: 0; }
+
+/* ── Filter drawer (slide-over from the right; holds the target search + all facets) ── */
+body.drawer-open { overflow: hidden; }
+.drawer-overlay {
+  position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.45);
+  display: flex; justify-content: flex-end;
+}
+.drawer-overlay[hidden] { display: none; }
+.filter-drawer {
+  width: 380px; max-width: 90vw; height: 100%;
+  background: var(--panel); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+}
+.drawer-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 12px; border-bottom: 1px solid var(--border); }
+.drawer-title { font-size: 15px; font-weight: 600; }
+.drawer-clear {
+  margin-left: auto; background: none; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--accent); font: inherit; font-size: 12px; padding: 3px 12px; cursor: pointer;
+}
+.drawer-clear:hover { border-color: var(--accent); }
+.drawer-close {
+  background: none; border: none; color: var(--muted); font-size: 18px; line-height: 1;
+  cursor: pointer; padding: 2px 4px;
+}
+.drawer-close:hover { color: var(--text); }
+.drawer-search {
+  margin: 12px 18px; width: calc(100% - 36px); height: var(--control-h); padding: 0 12px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 14px;
+}
+.drawer-search:focus { outline: none; border-color: var(--accent); }
+.drawer-body { flex: 1; overflow-y: auto; padding: 0 18px 24px; }
+.drawer-count { font-size: 12.5px; color: var(--muted); margin: 0 0 14px; }
+.drawer-empty { margin-top: 8px; }
+/* A facet with many values scrolls within its own box, so any number of values is reachable. */
+.facet-values { max-height: 280px; overflow-y: auto; }
+@media (max-width: 640px) { .filter-drawer { width: 100%; max-width: 100%; } }
+
+/* ── Filter bar: metric + sort selects (bars), view picker, icon actions ── */
+.bar-controls { display: flex; gap: 12px; align-items: flex-end; }
+.bar-select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 7px; height: var(--control-h); padding: 0 10px; font-size: 14px; font-family: var(--sans);
+}
+.bar-select:focus { outline: none; border-color: var(--accent); }
+.view-controls { display: flex; align-items: center; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--control-h); height: var(--control-h); padding: 0;
+}
+.icon-btn svg { opacity: 0.8; }
+.icon-btn:hover { border-color: var(--accent); }
+.icon-btn:hover svg { opacity: 1; color: var(--accent); }
+
+/* ── Metric title + match count above the bars ── */
+.bars-title { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 2px 4px 14px; }
+.bars-metric-title { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+.bars-metric-title .bars-metric-unit { font-size: 15px; font-weight: 500; color: var(--muted); }
+.bars-match-count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ── Modal (Share / Download choice dialog) ── */
+body.modal-open { overflow: hidden; }
+.modal-overlay {
+  position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, 0.5);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  width: 340px; max-width: 100%; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4); overflow: hidden;
+}
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.modal-title { font-size: 15px; font-weight: 600; }
+.modal-close {
+  margin-left: auto; background: none; border: none; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 4px;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 8px; display: flex; flex-direction: column; }
+
+/* ── Collapsible left filter panel (TARGET + facets). The aside is just a clip window; the card is
+   the fixed-width .panel-inner, which slides left (translateX) out of the shrinking window. ── */
+.filter-panel { overflow: hidden; }
+.panel-inner {
+  width: 262px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
+  display: flex; flex-direction: column;
+  transition: transform 0.26s ease, opacity 0.26s ease, visibility 0s linear 0s;
+}
+.data-layout.panel-collapsed .filter-panel { pointer-events: none; }
+.data-layout.panel-collapsed .panel-inner {
+  transform: translateX(-100%); opacity: 0; visibility: hidden;
+  transition: transform 0.26s ease, opacity 0.26s ease, visibility 0s linear 0.26s;
+}
+@media (max-width: 800px) {
+  .panel-inner { width: 100%; }
+  .data-layout.panel-collapsed .filter-panel { display: none; }
+}
+.panel-expand {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--control-h); height: var(--control-h);
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; color: var(--muted); cursor: pointer;
+}
+.panel-expand:hover { border-color: var(--accent); color: var(--accent); }
+.panel-badge, .facet-badge {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--accent);
+  color: #fff; font-size: 10.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center;
+}
+.panel-badge { position: absolute; top: -6px; right: -6px; }
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; border-bottom: 1px solid var(--border); }
+.panel-title { font-size: 13px; font-weight: 600; }
+.panel-clear {
+  margin-left: auto; flex: none; white-space: nowrap; background: none; border: 1px solid var(--border);
+  border-radius: 999px; color: var(--accent); font: inherit; font-size: 12px; line-height: 1.4;
+  padding: 1px 10px; cursor: pointer;
+}
+.panel-clear:hover { border-color: var(--accent); }
+.panel-sections { padding: 6px 12px 12px; }
+
+.facet-section { border-top: 1px solid var(--border); }
+.facet-section:first-child { border-top: none; }
+.facet-header {
+  width: 100%; display: flex; align-items: center; gap: 7px; padding: 9px 2px;
+  background: none; border: none; color: var(--text); font: inherit; font-size: 13px; cursor: pointer; text-align: left;
+}
+.facet-header:hover { color: var(--accent); }
+.facet-chevron { display: inline-flex; color: var(--muted); flex: none; }
+.facet-header:hover .facet-chevron { color: var(--accent); }
+.facet-title { font-weight: 600; }
+.facet-header .facet-badge { flex: none; margin-left: auto; }
+.facet-header-count { flex: none; margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.facet-body { padding: 0 0 8px 4px; }
+.facet-search {
+  width: 100%; height: 30px; padding: 0 10px; margin-bottom: 6px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font: inherit; font-size: 13px;
+}
+.facet-search:focus { outline: none; border-color: var(--accent); }
+.facet-actions { margin: 0 0 4px 2px; }
+.facet-all { background: none; border: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; padding: 0; }
+.facet-all:hover { text-decoration: underline; }
+/* No inner scroll — show the (≤10, or expanded) values in full; the whole panel scrolls instead. */
+.facet-section .facet-values { display: flex; flex-direction: column; gap: 1px; max-height: none; overflow: visible; }
+.facet-section .facet-row {
+  display: flex; align-items: center; gap: 8px; padding: 3px 6px 3px 2px;
+  border-radius: 6px; cursor: pointer; font-size: 13px; min-width: 0;
+}
+.facet-section .facet-row:hover { background: var(--panel-2); }
+.facet-section .facet-row input[type="checkbox"] { margin: 0; accent-color: var(--accent); flex: none; }
+.facet-section .facet-val { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.facet-section .facet-count { flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.facet-only {
+  flex: none; margin-left: 2px; visibility: hidden;
+  background: none; border: none; color: var(--accent); font: inherit; font-size: 11.5px; cursor: pointer; padding: 0;
+}
+.facet-section .facet-row:hover .facet-only { visibility: visible; }
+.facet-more { display: block; margin: 6px 0 2px; background: none; border: none; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 2px 0; }
+.facet-more:hover { color: var(--accent); }
+/* The ">99, search to narrow" hint is disabled — don't let it look clickable. */
+.facet-more:disabled { cursor: default; }
+.facet-more:disabled:hover { color: var(--muted); }
+.facet-empty { font-size: 12px; margin: 4px 2px; }
+
+/* Filter-bar toggle: opens/hides the left panel; "active" when open, badged with the filter count. */
+.filter-toggle {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: var(--control-h); height: var(--control-h); padding: 0;
+}
+.filter-toggle svg { opacity: 0.8; }
+.filter-toggle:hover { border-color: var(--accent); }
+.filter-toggle.active { border-color: var(--accent); color: var(--accent); }
+.filter-toggle.active svg, .filter-toggle:hover svg { opacity: 1; color: var(--accent); }
+.filter-toggle .filter-count {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+/* Table Columns dropdown: Select all + per-row "only" on hover (mirrors the facet quick-picks). */
+.dropdown-panel .rail-row { display: flex; align-items: center; gap: 8px; }
+.dropdown-panel .rail-row .rail-name { flex: 1 1 auto; }
+.dropdown-panel .rail-row .facet-only { margin-left: auto; visibility: hidden; }
+.dropdown-panel .rail-row:hover .facet-only { visibility: visible; }

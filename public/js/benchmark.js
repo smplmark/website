@@ -215,12 +215,20 @@ async function fetchJson(url) {
 // Never assume a collection fits one page: walk page[number] until a short page, bounded by a
 // hard client ceiling so a huge benchmark can't wedge the tab. Callers surface `truncated`.
 const PAGE_SIZE = 1000;
-const MAX_PAGES = 5; // ceiling: 5,000 rows per collection
+// The 5,000-row ceiling is gone: we deliberately pull the WHOLE collection into memory (the "fetch
+// everything, render client-side" model) to feel the real cost. MAX_PAGES is only a runaway backstop
+// (1,000,000 rows) so a pathological benchmark can't wedge the tab forever.
+const MAX_PAGES = 1000;
+// Offset pagination needs a stable total order or pages can skip/duplicate rows. created_at is
+// allowed on every collection and the server always appends an `id` tiebreaker, so it's fully stable.
+const STABLE_SORT = "created_at";
 async function fetchAllPages(url) {
   const data = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
     const sep = url.includes("?") ? "&" : "?";
-    const doc = await fetchJson(url + sep + "page[number]=" + page + "&page[size]=" + PAGE_SIZE);
+    const doc = await fetchJson(
+      url + sep + "sort=" + STABLE_SORT + "&page[number]=" + page + "&page[size]=" + PAGE_SIZE,
+    );
     data.push(...doc.data);
     if (doc.data.length < PAGE_SIZE) return { data: data, truncated: false };
   }
@@ -252,9 +260,14 @@ let chartMode = "TIME";
 let chart = null;
 let chartDrawn = false;
 let chartView = "bars"; // CATEGORY visualization: "bars" | "table"
-let selectedTargetIds = null; // Set of target ids, or null ⇒ all targets
+// Filter model — every value is CHECKED (shown) by default. Per field, the state is one of:
+//   • ALL — no `filters` entry: every value checked/shown (the default).
+//   • { mode:"IN", set } — INCLUDE: only the listed values are checked/shown ("only"/compare-a-few).
+//   • { mode:"EX", set } — EXCLUDE: every value EXCEPT the listed ones is checked/shown (uncheck-to-hide).
+// TARGET_FIELD keys the target selection; detail fields key the derived facets. Select-all / Clear
+// return a field (or all fields) to ALL, i.e. all boxes checked.
+let filters = {}; // field → { mode:"IN"|"EX", set:Set<string> }
 let metricSelection = []; // checked metric names, in schema order
-let railFilter = "";
 // The time window behind filter[created_at]: a preset ({preset} — "last N as of now") or
 // absolute UTC bounds ({from,to} in ms, either side null ⇒ open). URL from/to seeds the latter.
 let rangeState = { preset: "all" };
@@ -274,14 +287,15 @@ function markEmbedReady() {
   document.body.setAttribute("data-embed-ready", "1");
 }
 
-// A short caption line for an embed image: source · primary metric · (date range, for TIME).
+// A short caption line for an embed image: source · plotted metric · (date range, for TIME).
 function embedSummary(a) {
   const parts = [];
   const pa = a.published_as;
   const src = pa && (pa.source_name || pa.name || pa.display_name);
   if (src) parts.push(src);
-  const y = (chartDecl && chartDecl.y) || (metricList[0] && metricList[0].name);
-  if (y) parts.push(y);
+  // The metric the image actually shows (the user's choice), not the benchmark's default headline.
+  const y = currentY();
+  if (y) parts.push(titleCase(y));
   if (chartMode === "TIME" && rangeState.from != null && rangeState.to != null) {
     parts.push(fmtDate(new Date(rangeState.from).toISOString()) + " – " + fmtDate(new Date(rangeState.to).toISOString()));
   }
@@ -312,19 +326,6 @@ function renderEmbedChrome() {
   wrap.insertBefore(title, wrap.firstChild);
   wrap.appendChild(caption);
 }
-
-// Leaderboard mode: a high-cardinality CATEGORY benchmark (e.g. SPEC CPU2017's ~11.8k systems) is
-// browsed through the server-driven leaderboard — sort/search/facets/paging server-side — instead
-// of loading every target into the page. See setupLeaderboard(). Small benchmarks keep the
-// client-side chart/table/rail above.
-const LEADERBOARD_THRESHOLD = 300;
-const LB_PAGE_SIZE = 100;
-let leaderboardMode = false;
-let lbDrawn = false;
-let lbTotal = 0;
-let lbFacets = [];
-let lbRows = [];
-let lbState = { sort: null, desc: true, search: "", facets: {}, page: 1 }; // facets: field → Set(values)
 
 async function init() {
   const crumb = el("crumb-back");
@@ -378,48 +379,39 @@ async function init() {
   chartDecl = schema.chart || inferChart(metricList);
   chartMode = chartDecl ? chartDecl.x_kind || inferKind(chartDecl.x) : "TIME";
 
-  // Probe the target count cheaply (one row) and switch a large CATEGORY benchmark into leaderboard
-  // mode before loading anything else — the eager target/run fetch below is skipped for those.
-  if (chartMode === "CATEGORY") {
-    try {
-      const probe = await fetchJson(leaderboardUrl({ size: 1, total: true }));
-      lbTotal = (probe.meta && probe.meta.pagination && probe.meta.pagination.total) || 0;
-      leaderboardMode = lbTotal > LEADERBOARD_THRESHOLD;
-    } catch (_) {}
+  // One model for every benchmark, large or small (no server-side ranking endpoint): pull the WHOLE
+  // benchmark into the browser — all targets, all runs, and (lazily, on first draw) all measurements —
+  // then sort/filter/render entirely client-side. fetchAllPages walks every page with no row ceiling,
+  // so the real cost of the "fetch everything" model is felt directly.
+  try {
+    const res = await fetchAllPages(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+    targets = res.data;
+    targetsTruncated = res.truncated;
+  } catch (_) {
+    targets = [];
   }
-
-  if (!leaderboardMode) {
-    try {
-      const res = await fetchAllPages(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id));
-      targets = res.data;
-      targetsTruncated = res.truncated;
-    } catch (_) {
-      targets = [];
-    }
-    // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing. A run
-    // is a benchmark child now (it spans targets); the chart groups by each measurement's own target,
-    // so no run→target map is needed. Best-effort.
-    runs = [];
-    try {
-      const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
-      runs = res.data;
-      runsTruncated = res.truncated;
-    } catch (_) {}
-  }
+  // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing. A run
+  // is a benchmark child (it spans targets); the chart groups by each measurement's own target, so no
+  // run→target map is needed. Best-effort.
+  runs = [];
+  try {
+    const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+    runs = res.data;
+    runsTruncated = res.truncated;
+  } catch (_) {}
 
   // Embed mode: render only the data panel (branded), await the draw, and signal ready for the
   // screenshotter — no tabs, no chrome, no other panels.
   if (embedMode) {
     readViewParams();
-    if (leaderboardMode) setupLeaderboard();
-    else setupChartControls();
+    setupChartControls();
     renderEmbedChrome();
     // The data panel must be visible (not display:none) so uPlot can measure it and draw.
     document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.dataset.panel === "data"));
     el("tabs-wrap").hidden = false;
     try {
-      if (leaderboardMode) { lbDrawn = true; await loadLeaderboard(); }
-      else { chartDrawn = true; await drawChart(); }
+      chartDrawn = true;
+      await drawChart();
     } catch (_) {}
     markEmbedReady();
     return;
@@ -434,10 +426,9 @@ async function init() {
   // Before setupTabs: an initial #data hash (or a deep link) draws the chart immediately, and
   // that first draw must already see the URL-seeded range/targets/metrics/view/sort.
   readViewParams();
-  // Build the data-panel controls (leaderboard shell or the client chart controls) BEFORE setupTabs,
-  // because an initial #data hash makes setupTabs activate the tab, which draws into that shell.
-  if (leaderboardMode) setupLeaderboard();
-  else setupChartControls();
+  // Build the data-panel controls BEFORE setupTabs, because landing on the Data tab (now the default)
+  // draws the chart immediately, which needs the controls already in place.
+  setupChartControls();
   setupTabs();
 
   el("tabs-wrap").hidden = false;
@@ -535,7 +526,8 @@ function renderMetrics() {
   box.innerHTML =
     '<table class="metrics-table"><thead><tr>' +
     "<th>Metric</th><th>Unit</th><th>Description</th></tr></thead><tbody>" +
-    metricList
+    [...metricList]
+      .sort((a, z) => a.name.localeCompare(z.name, undefined, { numeric: true, sensitivity: "base" }))
       .map(
         (m) =>
           "<tr><td class=\"metric-name\">" + esc(m.name) + "</td>" +
@@ -612,7 +604,7 @@ function renderPublisher() {
 }
 
 // ── Stats tab — the benchmark's shape and provenance dates at a glance. Counts come from cheap
-// one-row `meta[total]` probes (so this works in both client and leaderboard mode), fetched lazily
+// one-row `meta[total]` probes (cheap regardless of benchmark size), fetched lazily
 // the first time the tab is opened. ──
 let statsLoaded = false;
 
@@ -675,16 +667,12 @@ async function renderStats() {
 
 // ── Tabs — hash-routed (#overview/#data/#metrics/#methodology/#publisher/#stats) so refresh
 // restores the tab and the back button walks tab history. ──
-const TAB_NAMES = ["overview", "data", "metrics", "methodology", "publisher", "stats"];
+const TAB_NAMES = ["overview", "data", "metrics", "methodology", "stats", "publisher"];
 function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
   if (name === "data") {
-    if (leaderboardMode) {
-      if (!lbDrawn) { lbDrawn = true; loadLeaderboard(); }
-    } else if (!chartDrawn) {
-      drawChart();
-    }
+    if (!chartDrawn) drawChart();
   } else if (name === "stats" && !statsLoaded) {
     statsLoaded = true;
     renderStats();
@@ -698,9 +686,10 @@ function setupTabs() {
     if (TAB_NAMES.includes(name)) activateTab(name, false);
   });
   const initial = location.hash.slice(1);
-  if (TAB_NAMES.includes(initial) && initial !== "overview") activateTab(initial, false);
-  // A deep link that pins the data view but names no tab should land on the chart, not Overview.
-  else if (!TAB_NAMES.includes(initial) && hasViewParams()) activateTab("data", false);
+  // Data is what visitors come to a benchmark to see, so it's the default landing tab; an explicit
+  // hash (#overview/#metrics/…) still overrides it.
+  if (TAB_NAMES.includes(initial)) activateTab(initial, false);
+  else activateTab("data", false);
   window.addEventListener("resize", () => {
     if (chart) chart.setSize({ width: el("chart").clientWidth || 900, height: 420 });
   });
@@ -724,7 +713,7 @@ function searchParams() {
 function hasViewParams() {
   const params = searchParams();
   if (VIEW_PARAM_KEYS.some((k) => params.has(k))) return true;
-  // Leaderboard-mode params (large CATEGORY benchmarks) also mean "land on the Data tab".
+  // Faceted-browse params (large CATEGORY benchmarks) also mean "land on the Data tab".
   if (params.has("q") || params.has("page")) return true;
   for (const k of params.keys()) if (k.startsWith("facet.")) return true;
   return false;
@@ -808,14 +797,18 @@ function readViewParams() {
   const targetsParam = params.get("targets");
   if (targetsParam !== null) {
     const idByKey = new Map(targets.map((t) => [t.attributes.key, t.id]));
-    const fragments = targetsParam.split(",").map((s) => s.trim()).filter(Boolean);
-    const ids = new Set();
-    for (const k of fragments) {
-      const id = idByKey.get(k);
-      if (id) ids.add(id);
+    let raw = targetsParam, mode = "IN";
+    if (raw.charAt(0) === "~") { mode = "EX"; raw = raw.slice(1); } // "~keys" ⇒ hide these, show the rest
+    const fragments = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const set = new Set();
+    for (const k of fragments) { const id = idByKey.get(k); if (id) set.add(id); }
+    if (mode === "EX") {
+      if (set.size) filters[TARGET_FIELD] = { mode: "EX", set };
+    } else if (fragments.length === 0) {
+      filters[TARGET_FIELD] = { mode: "IN", set: new Set() }; // explicit none-shown
+    } else if (set.size && set.size < targets.length) {
+      filters[TARGET_FIELD] = { mode: "IN", set };
     }
-    if (fragments.length === 0) selectedTargetIds = new Set();
-    else if (ids.size && ids.size < targets.length) selectedTargetIds = ids;
   }
 
   // metrics: validated against the schema, normalized to schema order (the picker's rule).
@@ -836,6 +829,18 @@ function readViewParams() {
     const name = desc ? sort.slice(1) : sort;
     if (metricList.some((m) => m.name === name)) tableSort = { key: name, desc: desc };
   }
+
+  // Drawer filters: facet.<field>=v1,v2 (values aren't validated against the derived facets — a
+  // facet the data doesn't have simply matches nothing) and the name search q. This makes a shared
+  // or embedded filtered view reproduce exactly.
+  for (const [k, v] of params) {
+    if (k.startsWith("facet.") && v) {
+      let raw = v, mode = "IN";
+      if (raw.charAt(0) === "~") { mode = "EX"; raw = raw.slice(1); }
+      const set = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+      if (set.size) filters[k.slice(6)] = { mode, set }; // "facet.".length === 6
+    }
+  }
 }
 
 // Single writer for the deep-link params: rewrite only our own keys, keep everything else
@@ -845,6 +850,8 @@ function syncViewParams() {
   clearTimeout(syncViewTimer);
   const params = searchParams();
   for (const k of VIEW_PARAM_KEYS) params.delete(k);
+  // The facet.<field> filters live outside VIEW_PARAM_KEYS — clear them too before rewriting.
+  for (const k of [...params.keys()]) if (k.startsWith("facet.")) params.delete(k);
 
   if (chartMode === "TIME") {
     if (rangeState.preset !== undefined) {
@@ -855,10 +862,11 @@ function syncViewParams() {
     }
   }
 
-  if (selectedTargetIds !== null) {
-    // Empty selection serializes as an explicit "targets=" — absence means all targets.
-    const keys = targets.filter((t) => selectedTargetIds.has(t.id)).map((t) => t.attributes.key);
-    params.set("targets", keys.join(","));
+  const tf = filters[TARGET_FIELD];
+  if (tf) {
+    // IN → the shown keys; EX → "~" + the hidden keys. Absence means all targets (ALL, all checked).
+    const keys = targets.filter((t) => tf.set.has(t.id)).map((t) => t.attributes.key);
+    params.set("targets", (tf.mode === "EX" ? "~" : "") + keys.join(","));
   }
 
   if (barsSingle()) {
@@ -873,6 +881,15 @@ function syncViewParams() {
   if (chartMode === "CATEGORY" && chartView === "table") {
     params.set("view", "table");
     if (tableSort.key) params.set("sort", (tableSort.desc ? "-" : "") + tableSort.key);
+  }
+
+  // Drawer filters → URL (so "Copy link"/"Copy image link" reproduce the filtered view; the embed
+  // image cache already keys on facet.*/q, so each distinct filter yields its own cached image).
+  for (const field of Object.keys(filters)) {
+    if (field === TARGET_FIELD) continue;
+    const f = filters[field];
+    const vals = [...f.set];
+    if (vals.length) params.set("facet." + field, (f.mode === "EX" ? "~" : "") + vals.join(","));
   }
 
   const qs = params.toString();
@@ -946,6 +963,9 @@ function utcTicks(u, splits) {
 }
 function destroyChart() {
   if (chart) { chart.destroy(); chart = null; }
+  // Every render path calls destroyChart first, so this is where the bars' scroll/resize windowing
+  // listener gets torn down — including paths that never re-arm it (empty bars, line charts).
+  teardownIncremental();
 }
 
 function metricUnit(name) {
@@ -1039,37 +1059,108 @@ function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
   }
 }
 
+// ── Incremental rendering: build the first RENDER_CHUNK rows, then append the next chunk whenever
+// the user scrolls near the end (IntersectionObserver on a sentinel). Keeps an 11k-row benchmark
+// from materializing 11k DOM nodes up front — we build ~60 and grow on demand, no library. ──
+const RENDER_CHUNK = 60;
+let incScrollHandler = null;
+
+function teardownIncremental() {
+  if (incScrollHandler) {
+    window.removeEventListener("scroll", incScrollHandler);
+    window.removeEventListener("resize", incScrollHandler);
+    incScrollHandler = null;
+  }
+}
+
+function renderIncremental(listEl, items, renderRow) {
+  teardownIncremental(); // drop the previous view's listener before wiring this one
+  let n = 0;
+  const isRow = listEl.tagName === "TBODY"; // a table body needs a <tr> sentinel, not a <div>
+  const sentinel = document.createElement(isRow ? "tr" : "div");
+  sentinel.className = "scroll-sentinel";
+  if (isRow) sentinel.innerHTML = "<td></td>";
+  listEl.appendChild(sentinel);
+  function appendChunk() {
+    const end = Math.min(n + RENDER_CHUNK, items.length);
+    let html = "";
+    for (let i = n; i < end; i++) html += renderRow(items[i], i);
+    sentinel.insertAdjacentHTML("beforebegin", html);
+    n = end;
+  }
+  function fill() {
+    // Append while the sentinel sits within ~a screen of the viewport, so the visible area is always
+    // full; stop once it's parked below the fold and wait for the next scroll.
+    while (n < items.length && sentinel.getBoundingClientRect().top <= window.innerHeight + 600) {
+      appendChunk();
+    }
+    if (n >= items.length) teardownIncremental();
+  }
+  // Call fill() directly on scroll — it's a single getBoundingClientRect read unless we're near the
+  // end, so it's cheap, and unlike requestAnimationFrame it still runs when the tab is backgrounded.
+  incScrollHandler = fill;
+  window.addEventListener("scroll", incScrollHandler, { passive: true });
+  window.addEventListener("resize", incScrollHandler);
+  fill(); // first chunks to fill the initial screen
+}
+
+// ── Category bars: one ranked bar per target for the chosen metric. A header over the value column
+// names the plotted metric (a picker when there's more than one) and toggles the sort direction, so
+// it's always clear WHAT the bars show. ──
+let barsDesc = true;
+
+// base_score → "Base Score", mmlu_pro → "Mmlu Pro". Used for the big metric title over the bars.
+function titleCase(s) {
+  return String(s == null ? "" : s).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function renderBars(seriesTargets, perTargetPoints, yKey) {
-  // CATEGORY: reduce each target's observations to a single value (mean of y), ranked best-first.
-  // Every row renders — the data is already in the browser, and scrolling beats clicking.
   destroyChart();
   const rows = seriesTargets.map((t, i) => {
     const pts = perTargetPoints[i];
     const mean = pts.length ? pts.reduce((s, p) => s + p.y, 0) / pts.length : null;
     return { name: t.attributes.name, value: mean };
   });
-  rows.sort((a, z) => (z.value == null ? -Infinity : z.value) - (a.value == null ? -Infinity : a.value));
+  // Rank by value in the chosen direction, but keep null-valued targets last either way (a missing
+  // measurement shouldn't jump to the top of an ascending sort).
+  rows.sort((a, z) => {
+    if (a.value == null && z.value == null) return 0;
+    if (a.value == null) return 1;
+    if (z.value == null) return -1;
+    return barsDesc ? z.value - a.value : a.value - z.value;
+  });
   const max = Math.max(1, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))));
-  if (!rows.some((r) => r.value != null)) { el("empty").hidden = false; return; }
-  el("empty").hidden = true;
+  const hasData = rows.some((r) => r.value != null);
+  // Above the bars: the plotted metric, title-cased in a large font (chosen in the filter bar), plus
+  // how many bars match the current filter out of the benchmark's total.
+  const unitSuffix = metricUnit(yKey) ? ' <span class="bars-metric-unit">(' + esc(metricUnit(yKey)) + ")</span>" : "";
+  const count = seriesTargets.length, total = targets.length;
+  const countText = count === total
+    ? count.toLocaleString() + (count === 1 ? " target" : " targets")
+    : count.toLocaleString() + " of " + total.toLocaleString() + " targets";
+  const title =
+    '<div class="bars-title">' +
+    '<h3 class="bars-metric-title">' + esc(titleCase(yKey)) + unitSuffix + "</h3>" +
+    '<span class="bars-match-count">' + countText + "</span></div>";
+  el("chart").innerHTML = title + '<div class="bars" id="bars-list"></div>';
+  el("empty").hidden = hasData;
+  if (!hasData) { el("bars-list").remove(); return; }
   const unit = metricUnit(yKey);
-  el("chart").innerHTML =
-    '<div class="bars">' +
-    (embedMode ? rows.slice(0, EMBED_ROWS) : rows)
-      .map((r, i) => {
-        const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
-        const val = r.value == null ? "—" : fmtCell(r.value) + (unit ? " " + unit : "");
-        return (
-          '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
-          '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
-          '<div class="bar-value">' + esc(val) + "</div></div>"
-        );
-      })
-      .join("") +
-    "</div>";
+  const renderRow = (r, i) => {
+    const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
+    const val = r.value == null ? "—" : fmtCell(r.value) + (unit ? " " + unit : "");
+    return (
+      '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
+      '<div class="bar-value">' + esc(val) + "</div></div>"
+    );
+  };
+  if (embedMode) el("bars-list").innerHTML = rows.slice(0, EMBED_ROWS).map(renderRow).join("");
+  else renderIncremental(el("bars-list"), rows, renderRow);
 }
 
-// ── Table view (CATEGORY benchmarks): every metric per target, sortable by column ──
+// ── Table view (CATEGORY benchmarks): a column per selected metric, sortable by header click; rows
+// are windowed (first N, more on scroll) so a huge benchmark's table stays cheap. ──
 let tableSort = { key: null, desc: true };
 
 function fmtCell(v) {
@@ -1114,16 +1205,13 @@ function renderTable(seriesTargets, byTarget) {
           (name === key ? (tableSort.desc ? " ↓" : " ↑") : "") + "</th>",
       )
       .join("") +
-    "</tr></thead><tbody>" +
-    (embedMode ? rows.slice(0, EMBED_ROWS) : rows)
-      .map(
-        (r) =>
-          '<tr><td title="' + esc(r.name) + '">' + esc(r.name) + "</td>" +
-          metricNames.map((name) => "<td>" + esc(fmtCell(r.cells[name])) + "</td>").join("") +
-          "</tr>",
-      )
-      .join("") +
-    "</tbody></table></div>";
+    '</tr></thead><tbody id="table-body"></tbody></table></div>';
+  const renderRow = (r) =>
+    '<tr><td title="' + esc(r.name) + '">' + esc(r.name) + "</td>" +
+    metricNames.map((name) => "<td>" + esc(fmtCell(r.cells[name])) + "</td>").join("") + "</tr>";
+  const body = el("table-body");
+  if (embedMode) body.innerHTML = rows.slice(0, EMBED_ROWS).map(renderRow).join("");
+  else renderIncremental(body, rows, renderRow);
   el("chart").querySelectorAll("th.sortable").forEach((th) => {
     th.addEventListener("click", () => {
       const metric = th.dataset.metric;
@@ -1211,7 +1299,7 @@ async function downloadObservations(accept, extension) {
 // or its image, or post to a social network (plain intent URLs — no SDKs, no tracking, matching our
 // privacy stance). Download is its own button (data isn't sharing): the current scope as CSV/JSON.
 // Both links always reflect the on-screen view because the deep-link params keep the URL in sync.
-// Rendered into both the chart-mode and leaderboard-mode control bars.
+// Rendered into the Data tab's control bar.
 
 // Inline glyphs (no external assets): brand marks for the social targets, plus action icons.
 const ICONS = {
@@ -1224,6 +1312,13 @@ const ICONS = {
   file: '<svg class="share-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><path d="M4 2h5l3 3v9H4V2z" stroke-linejoin="round"/><path d="M9 2v3h3M6 8.5h4M6 11h4" stroke-linecap="round"/></svg>',
   download: '<svg class="dl-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M8 2.5v7m0 0L5.2 6.7M8 9.5l2.8-2.8M3 13h10" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   caret: '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  filter: '<svg class="share-ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 3.5h12L9.4 8.6v4L6.6 14V8.6L2 3.5z" stroke-linejoin="round"/></svg>',
+  arrowDown: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 3v10M4.5 9.5 8 13l3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  arrowUp: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M8 13V3M4.5 6.5 8 3l3.5 3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  share: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="12" cy="3.5" r="1.8"/><circle cx="4" cy="8" r="1.8"/><circle cx="12" cy="12.5" r="1.8"/><path d="M5.6 7.1 10.4 4.4M5.6 8.9l4.8 2.7" stroke-linecap="round"/></svg>',
+  chevronDown: '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M2 4l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  chevronRight: '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  chevronLeft: '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M8 2L4 6l4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
 function shareItem(tag, act, icon, label, extra) {
@@ -1356,603 +1451,500 @@ function wireDownloadMenu(root, downloads) {
   wrap.querySelector('[data-act="json"]').addEventListener("click", () => { close(); downloads.json(); });
 }
 
-// ── Leaderboard mode (large CATEGORY benchmarks): server-driven sort / search / facets / paging.
-// Takes over the Data panel entirely; the client-side chart/rail machinery above is untouched. ──
+// ── Modal — a centered dialog for the Share / Download choices (replaces the old dropdown menus;
+// the filter-bar buttons are now icon-only and pop this). ──
+function closeModal() {
+  const m = document.getElementById("app-modal");
+  if (!m) return;
+  if (m.__onKey) document.removeEventListener("keydown", m.__onKey);
+  m.remove();
+  document.body.classList.remove("modal-open");
+}
+function openModal(title, bodyHtml, onWire) {
+  closeModal();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.id = "app-modal";
+  overlay.innerHTML =
+    '<div class="modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + '">' +
+    '<div class="modal-head"><span class="modal-title">' + esc(title) + "</span>" +
+    '<button type="button" class="modal-close" aria-label="Close">✕</button></div>' +
+    '<div class="modal-body">' + bodyHtml + "</div></div>";
+  document.body.appendChild(overlay);
+  document.body.classList.add("modal-open");
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
+  overlay.querySelector(".modal-close").addEventListener("click", closeModal);
+  const onKey = (e) => { if (e.key === "Escape") closeModal(); };
+  document.addEventListener("keydown", onKey);
+  overlay.__onKey = onKey;
+  if (onWire) onWire(overlay.querySelector(".modal-body"));
+}
+function openShareModal() {
+  const body =
+    shareItem("button", "copy", ICONS.link, "Copy link", ' type="button"') +
+    shareItem("button", "copy-image", ICONS.image, "Copy image link", ' type="button"') +
+    '<div class="share-sep" role="separator"></div>' +
+    shareItem("a", "x", ICONS.x, "Share on X", ' target="_blank" rel="noopener"') +
+    shareItem("a", "linkedin", ICONS.linkedin, "Share on LinkedIn", ' target="_blank" rel="noopener"') +
+    shareItem("a", "facebook", ICONS.facebook, "Share on Facebook", ' target="_blank" rel="noopener"') +
+    shareItem("a", "email", ICONS.email, "Email");
+  openModal("Share this view", body, (root) => {
+    const url = shareUrl();
+    const title = (benchmark && benchmark.attributes.name) || "smplmark benchmark";
+    const encUrl = encodeURIComponent(url), encTitle = encodeURIComponent(title);
+    root.querySelector('[data-act="x"]').href = "https://twitter.com/intent/tweet?url=" + encUrl + "&text=" + encTitle;
+    root.querySelector('[data-act="linkedin"]').href = "https://www.linkedin.com/sharing/share-offsite/?url=" + encUrl;
+    root.querySelector('[data-act="facebook"]').href = "https://www.facebook.com/sharer/sharer.php?u=" + encUrl;
+    root.querySelector('[data-act="email"]').href = "mailto:?subject=" + encTitle + "&body=" + encodeURIComponent(title + "\n\n" + url);
+    root.querySelector('[data-act="copy"]').addEventListener("click", (e) => copyToClipboard(shareUrl(), e.currentTarget));
+    root.querySelector('[data-act="copy-image"]').addEventListener("click", (e) => copyToClipboard(embedImageUrl(), e.currentTarget));
+    root.querySelectorAll("a.share-item").forEach((a) => a.addEventListener("click", closeModal));
+  });
+}
+function openDownloadModal(downloads) {
+  const body =
+    shareItem("button", "csv", ICONS.file, "CSV", ' type="button"') +
+    shareItem("button", "json", ICONS.file, "JSON", ' type="button"');
+  openModal("Download data", body, (root) => {
+    root.querySelector('[data-act="csv"]').addEventListener("click", () => { closeModal(); downloads.csv(); });
+    root.querySelector('[data-act="json"]').addEventListener("click", () => { closeModal(); downloads.json(); });
+  });
+}
 
-const FACET_LABELS = {
-  vendor: "Vendor", sponsor: "Test sponsor", chips: "Sockets", cores: "Cores", copies: "Copies",
-  threads_per_core: "Threads / core", nodes: "Nodes", ranks: "Ranks", threads: "Threads",
-  jvm: "JVM", os: "OS", database: "Database", currency: "Currency", tpc_status: "Status",
-};
-const FACET_MAX_VALUES = 12; // values shown per facet before "+N more"
+// ── Client-derived facets: aggregate every target's open-ended `details` map. A field with ≥2
+// distinct values becomes a facet; values rank by count. No server, no caps — every target is
+// already in memory — facets are derived client-side, not served. ──
+let facetList = [];    // [{ field, values: [{value, count}] }]
+
+function deriveFacets() {
+  const byField = new Map();
+  for (const t of targets) {
+    const d = t.attributes.details;
+    if (!d || typeof d !== "object") continue;
+    for (const k of Object.keys(d)) {
+      const v = d[k];
+      if (v == null || typeof v === "object") continue; // scalar detail values only
+      const val = String(v);
+      let vm = byField.get(k);
+      if (!vm) { vm = new Map(); byField.set(k, vm); }
+      vm.set(val, (vm.get(val) || 0) + 1);
+    }
+  }
+  const facets = [];
+  for (const [field, vm] of byField) {
+    if (vm.size < 2) continue; // a single-value field can't filter anything
+    const values = [...vm.entries()]
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, z) => z.count - a.count || (a.value < z.value ? -1 : 1));
+    facets.push({ field, values });
+  }
+  facets.sort((a, z) => z.values.length - a.values.length || (a.field < z.field ? -1 : 1));
+  return facets;
+}
 
 function facetLabel(field) {
-  return FACET_LABELS[field] || field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, " ");
-}
-function metricByName(name) {
-  return metricList.find((m) => m.name === name) || null;
-}
-function metricLabel(name) {
-  const m = metricByName(name);
-  return m && m.unit ? m.name + " (" + m.unit + ")" : name;
-}
-function anyLbFilter() {
-  return Object.keys(lbState.facets).length > 0 || lbState.search.trim() !== "";
-}
-function lbSortField() {
-  return lbState.sort || (chartDecl && chartDecl.y) || (metricList[0] && metricList[0].name) || null;
+  return field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, " ");
 }
 
-/** Build the leaderboard request URL from current sort/search/facets/page. */
-function leaderboardUrl(opts) {
-  opts = opts || {};
-  const p = new URLSearchParams();
-  const field = lbSortField();
-  if (field) p.set("sort", (lbState.desc ? "-" : "") + field);
-  p.set("page[size]", String(opts.size || LB_PAGE_SIZE));
-  p.set("page[number]", String(opts.page || lbState.page || 1));
-  if (opts.total) p.set("meta[total]", "true");
-  if (lbState.search.trim()) p.set("filter[search]", lbState.search.trim());
-  for (const f of Object.keys(lbState.facets)) {
-    for (const v of lbState.facets[f]) p.append("filter[facet." + f + "]", v);
+// A target is plotted when it clears every active facet (OR within a field, AND across fields) AND
+// the explicit TARGET selection. `targetsExcept` gives the set passing every filter but one — the
+// basis for faceted counts (a facet's own selection is ignored when counting its own values).
+// A value is checked (and shown) unless a filter says otherwise. IN → only the set is checked;
+// EX → everything but the set is checked; ALL (no entry) → everything is checked.
+function valueChecked(field, value) {
+  const f = filters[field];
+  if (!f) return true;
+  return f.mode === "IN" ? f.set.has(value) : !f.set.has(value);
+}
+function fieldActive(field) { return filters[field] !== undefined; }
+
+// Uncheck/check one value, transitioning ALL ⇄ EX ⇄ IN and collapsing back to ALL when nothing is
+// hidden. Unchecking from ALL starts an EXCLUDE; "only" (elsewhere) starts an INCLUDE.
+function setValueChecked(field, value, checked) {
+  const f = filters[field];
+  if (!f) {
+    if (checked) return; // already checked (ALL)
+    filters[field] = { mode: "EX", set: new Set([value]) };
+    return;
   }
-  return API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/leaderboard?" + p.toString();
-}
-
-// Leaderboard deep-linking: mirror lbState (view / sort / search / facets / page) into the URL so
-// "Copy link" reproduces the exact filtered view, just as the chart mode does for small benchmarks.
-// Leaderboard and chart mode never coexist for one benchmark, so `view`/`sort` are unambiguous.
-const LB_PARAM_KEYS = ["view", "sort", "q", "page"]; // plus facet.<field> handled dynamically
-
-function lbDefaultField() {
-  return (chartDecl && chartDecl.y) || (metricList[0] && metricList[0].name) || null;
-}
-
-// State → URL. Serialize only departures from the default view (table, y-metric high→low, no
-// filters), so a pristine leaderboard has a clean URL. Preserves the hash + ?api= + anything else.
-function syncLbParams() {
-  const params = searchParams();
-  for (const k of [...params.keys()]) {
-    if (LB_PARAM_KEYS.includes(k) || k.startsWith("facet.")) params.delete(k);
+  if (f.mode === "EX") {
+    if (checked) f.set.delete(value); else f.set.add(value);
+    if (f.set.size === 0) delete filters[field]; // nothing hidden ⇒ ALL
+    return;
   }
-  if (chartView === "bars") params.set("view", "bars"); // table is the leaderboard default
-  const field = lbSortField();
-  if (field && (field !== lbDefaultField() || !lbState.desc)) {
-    params.set("sort", (lbState.desc ? "-" : "") + field);
+  // IN: checking widens the shown set; unchecking narrows it (an empty IN is a valid "none shown").
+  if (checked) f.set.add(value); else f.set.delete(value);
+}
+function onlyValue(field, value) { filters[field] = { mode: "IN", set: new Set([value]) }; }
+function clearField(field) { delete filters[field]; }
+
+function passesFacets(t) {
+  const d = t.attributes.details || {};
+  for (const field of Object.keys(filters)) {
+    if (field === TARGET_FIELD) continue;
+    if (!valueChecked(field, String(d[field]))) return false;
   }
-  if (lbState.search.trim()) params.set("q", lbState.search.trim());
-  for (const f of Object.keys(lbState.facets)) {
-    const vals = [...lbState.facets[f]];
-    if (vals.length) params.set("facet." + f, vals.join(","));
-  }
-  if (lbState.page > 1) params.set("page", String(lbState.page));
-  const qs = params.toString();
-  history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  return true;
 }
-
-// URL → state. Runs once before the first load. Sort is validated against real metrics; facet
-// values pass through (the server ignores unknown facets — we can't know them until data loads).
-function readLbParams() {
-  const params = searchParams();
-  const sortParam = params.get("sort");
-  if (sortParam) {
-    const desc = sortParam.charAt(0) === "-";
-    const name = desc ? sortParam.slice(1) : sortParam;
-    if (metricList.some((m) => m.name === name)) { lbState.sort = name; lbState.desc = desc; }
-  }
-  const q = params.get("q");
-  if (q) lbState.search = q;
-  const facets = {};
-  for (const [k, v] of params) {
-    if (k.startsWith("facet.") && v) {
-      const set = new Set(v.split(",").map((s) => s.trim()).filter(Boolean));
-      if (set.size) facets[k.slice(6)] = set; // "facet.".length === 6
-    }
-  }
-  if (Object.keys(facets).length) lbState.facets = facets;
-  const page = parseInt(params.get("page") || "", 10);
-  if (Number.isInteger(page) && page > 1) lbState.page = page;
-}
-
-/** Replace the Data panel with the leaderboard shell and wire its controls. */
-function setupLeaderboard() {
-  lbState.sort = lbSortField();
-  // A ranked table (rank · system · vendor · scores) reads better than bars for thousands of rows,
-  // so leaderboard mode defaults to the table — unless the deep link explicitly asked for bars.
-  const viewParam = searchParams().get("view");
-  chartView = viewParam === "bars" || viewParam === "table" ? viewParam : "table";
-  readLbParams(); // seed sort / search / facets / page from the URL, overriding the defaults
-  const panel = document.querySelector('.tab-panel[data-panel="data"]');
-  const options = metricList.map((m) => '<option value="' + esc(m.name) + '">' + esc(metricLabel(m.name)) + "</option>").join("");
-  panel.innerHTML =
-    '<div class="data-layout">' +
-    '<aside class="target-rail lb-facets" id="lb-facets"></aside>' +
-    '<div class="data-main">' +
-    '<div class="controls lb-controls">' +
-    '<input id="lb-search" class="lb-search" type="search" placeholder="Search systems…" autocomplete="off">' +
-    '<div class="field"><label for="lb-sort">Sort</label><select id="lb-sort">' + options + "</select></div>" +
-    '<button type="button" class="btn lb-dir" id="lb-dir">High → low</button>' +
-    '<div class="spacer"></div>' +
-    '<div class="field"><label>View</label><div class="segmented" role="radiogroup" aria-label="View">' +
-    '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
-    '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
-    "</div></div>" +
-    '<div class="links" id="lb-actions">' + shareMenuHtml() + downloadMenuHtml() + "</div>" +
-    "</div>" +
-    '<div id="lb-main"></div>' +
-    '<div id="lb-status" class="status"></div>' +
-    '<div id="lb-pager" class="lb-pager"></div>' +
-    "</div></div>";
-
-  if (lbState.sort) el("lb-sort").value = lbState.sort;
-  el("lb-dir").textContent = lbState.desc ? "High → low" : "Low → high";
-  el("lb-search").value = lbState.search;
-  el("lb-sort").addEventListener("change", () => {
-    lbState.sort = el("lb-sort").value;
-    lbState.page = 1;
-    loadLeaderboard();
-  });
-  el("lb-dir").addEventListener("click", () => {
-    lbState.desc = !lbState.desc;
-    el("lb-dir").textContent = lbState.desc ? "High → low" : "Low → high";
-    lbState.page = 1;
-    loadLeaderboard();
-  });
-  let searchTimer = null;
-  el("lb-search").addEventListener("input", () => {
-    clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => {
-      lbState.search = el("lb-search").value;
-      lbState.page = 1;
-      loadLeaderboard();
-    }, 300);
-  });
-  panel.querySelectorAll(".seg-option").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (btn.dataset.view === chartView) return;
-      chartView = btn.dataset.view;
-      panel.querySelectorAll(".seg-option").forEach((b) => {
-        const on = b === btn;
-        b.classList.toggle("active", on);
-        b.setAttribute("aria-checked", String(on));
-      });
-      syncLbParams(); // the view toggle doesn't reload, so sync the URL here
-      renderLbMain();
-    });
-  });
-  wireShareMenu(el("lb-actions"));
-  wireDownloadMenu(el("lb-actions"), {
-    csv: () => downloadLeaderboard("csv"),
-    json: () => downloadLeaderboard("json"),
-  });
-}
-
-// Download the WHOLE current filter (server caps to the target limit) as CSV or JSON. CSV is driven
-// by the Accept header; JSON by ?format=json — both hit the same filtered leaderboard URL.
-async function downloadLeaderboard(ext) {
-  const status = el("lb-status");
-  try {
-    const url = leaderboardUrl({}) + (ext === "json" ? "&format=json" : "");
-    const accept = ext === "csv" ? "text/csv" : "application/json";
-    const res = await fetch(url, { headers: { Accept: accept } });
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = benchmark.attributes.key + "-leaderboard." + ext;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  } catch (err) {
-    status.className = "status error";
-    status.textContent = ext.toUpperCase() + " download failed: " + err.message;
-  }
-}
-
-/** Fetch the current page + total + facets and redraw everything. */
-async function loadLeaderboard() {
-  syncLbParams(); // every data-affecting change funnels through here — keep the URL shareable
-  const status = el("lb-status");
-  status.className = "status";
-  status.textContent = "Loading…";
-  try {
-    // An image can't scroll, so an embed fetches just the top rows.
-    const doc = await fetchJson(leaderboardUrl({ total: true, size: embedMode ? EMBED_ROWS : undefined }));
-    lbRows = doc.data || [];
-    lbTotal = (doc.meta && doc.meta.pagination && doc.meta.pagination.total) || lbRows.length;
-    lbFacets = (doc.meta && doc.meta.facets) || [];
-    renderLbFacets();
-    renderLbMain();
-    renderLbPager();
-    status.className = "status";
-    status.textContent = lbStatusLine();
-  } catch (err) {
-    status.className = "status error";
-    status.textContent = "Failed to load leaderboard: " + err.message;
-  }
-}
-
-function lbStatusLine() {
-  if (lbTotal === 0) return "No systems match these filters.";
-  const start = (lbState.page - 1) * LB_PAGE_SIZE + 1;
-  const end = Math.min(lbState.page * LB_PAGE_SIZE, lbTotal);
-  return (
-    lbTotal.toLocaleString() + (anyLbFilter() ? " matching" : "") + " system" + (lbTotal === 1 ? "" : "s") +
-    " · showing " + start.toLocaleString() + "–" + end.toLocaleString() +
-    " · sorted by " + (lbState.sort || "") + (lbState.desc ? " (high→low)" : " (low→high)")
-  );
-}
-
-function renderLbFacets() {
-  const box = el("lb-facets");
-  if (!lbFacets.length) { box.hidden = true; box.innerHTML = ""; return; }
-  box.hidden = false;
-  let html =
-    '<div class="rail-head"><span class="rail-title">Filter</span>' +
-    (anyLbFilter() ? '<button type="button" class="rail-all" id="lb-clear">Clear</button>' : "") +
-    "</div>";
-  for (const f of lbFacets) {
-    const active = lbState.facets[f.field] || new Set();
-    html += '<div class="facet"><div class="facet-name">' + esc(facetLabel(f.field)) + "</div>";
-    for (const v of f.values.slice(0, FACET_MAX_VALUES)) {
-      html +=
-        '<label class="facet-row"><input type="checkbox" data-field="' + esc(f.field) + '" data-value="' + esc(v.value) + '"' +
-        (active.has(v.value) ? " checked" : "") + ">" +
-        '<span class="facet-val" title="' + esc(v.value) + '">' + esc(v.value) + "</span>" +
-        '<span class="facet-count">' + v.count.toLocaleString() + "</span></label>";
-    }
-    if (f.values.length > FACET_MAX_VALUES) {
-      html += '<div class="facet-more">+' + (f.values.length - FACET_MAX_VALUES) + (f.truncated ? "+" : "") + " more</div>";
-    }
-    html += "</div>";
-  }
-  box.innerHTML = html;
-  box.querySelectorAll("input[type=checkbox]").forEach((cb) => {
-    cb.addEventListener("change", () => {
-      const field = cb.dataset.field;
-      const set = lbState.facets[field] || new Set();
-      if (cb.checked) set.add(cb.dataset.value);
-      else set.delete(cb.dataset.value);
-      if (set.size) lbState.facets[field] = set;
-      else delete lbState.facets[field];
-      lbState.page = 1;
-      loadLeaderboard();
-    });
-  });
-  const clear = el("lb-clear");
-  if (clear) {
-    clear.addEventListener("click", () => {
-      lbState.facets = {};
-      lbState.search = "";
-      if (el("lb-search")) el("lb-search").value = "";
-      lbState.page = 1;
-      loadLeaderboard();
-    });
-  }
-}
-
-function renderLbMain() {
-  const main = el("lb-main");
-  if (!lbRows.length) { main.innerHTML = '<div class="empty">No systems match these filters.</div>'; return; }
-  if (chartView === "bars") renderLbBars(main);
-  else renderLbTable(main);
-}
-
-function renderLbTable(main) {
-  const metricNames = metricList.map((m) => m.name);
-  const startRank = (lbState.page - 1) * LB_PAGE_SIZE;
-  const showVendor = lbRows.some((r) => r.attributes.details && r.attributes.details.vendor);
-  let html =
-    '<div class="table-wrap"><table class="data-table lb-table"><thead><tr><th class="rank">#</th><th class="name-col">System</th>' +
-    (showVendor ? '<th class="text-col">Vendor</th>' : "") +
-    metricNames
-      .map(
-        (n) =>
-          '<th class="sortable" data-metric="' + esc(n) + '">' + esc(metricLabel(n)) +
-          (lbState.sort === n ? (lbState.desc ? " ↓" : " ↑") : "") + "</th>",
-      )
-      .join("") +
-    "</tr></thead><tbody>";
-  lbRows.forEach((r, i) => {
-    const a = r.attributes;
-    const metrics = a.metrics || {};
-    html +=
-      '<tr><td class="rank">' + (startRank + i + 1) + '</td><td class="name-col" title="' + esc(a.name) + '">' + esc(a.name) + "</td>" +
-      (showVendor ? '<td class="text-col">' + esc((a.details && a.details.vendor) || "—") + "</td>" : "") +
-      metricNames.map((n) => "<td>" + esc(fmtCell(metrics[n])) + "</td>").join("") +
-      "</tr>";
-  });
-  html += "</tbody></table></div>";
-  main.innerHTML = html;
-  main.querySelectorAll("th.sortable").forEach((th) => {
-    th.addEventListener("click", () => {
-      const m = th.dataset.metric;
-      if (lbState.sort === m) lbState.desc = !lbState.desc;
-      else { lbState.sort = m; lbState.desc = true; }
-      if (el("lb-sort")) el("lb-sort").value = lbState.sort;
-      if (el("lb-dir")) el("lb-dir").textContent = lbState.desc ? "High → low" : "Low → high";
-      lbState.page = 1;
-      loadLeaderboard();
-    });
-  });
-}
-
-function renderLbBars(main) {
-  const yKey = lbSortField();
-  const unit = metricUnit(yKey);
-  const rows = lbRows.map((r) => {
-    const v = (r.attributes.metrics || {})[yKey];
-    return { name: r.attributes.name, value: typeof v === "number" ? v : null };
-  });
-  const max = Math.max(1, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))));
-  main.innerHTML =
-    '<div class="bars">' +
-    rows
-      .map((r, i) => {
-        const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
-        const val = r.value == null ? "—" : fmtCell(r.value) + (unit ? " " + unit : "");
-        return (
-          '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
-          '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
-          '<div class="bar-value">' + esc(val) + "</div></div>"
-        );
-      })
-      .join("") +
-    "</div>";
-}
-
-function renderLbPager() {
-  const pager = el("lb-pager");
-  const pages = Math.max(1, Math.ceil(lbTotal / LB_PAGE_SIZE));
-  if (pages <= 1) { pager.innerHTML = ""; return; }
-  pager.innerHTML =
-    '<button type="button" class="btn" id="lb-prev"' + (lbState.page <= 1 ? " disabled" : "") + ">‹ Prev</button>" +
-    '<span class="lb-pageinfo">Page ' + lbState.page + " of " + pages.toLocaleString() + "</span>" +
-    '<button type="button" class="btn" id="lb-next"' + (lbState.page >= pages ? " disabled" : "") + ">Next ›</button>";
-  const go = (delta) => {
-    lbState.page = Math.min(pages, Math.max(1, lbState.page + delta));
-    loadLeaderboard();
-    const panel = document.querySelector('.tab-panel[data-panel="data"]');
-    if (panel) panel.scrollIntoView({ block: "start", behavior: "smooth" });
-  };
-  if (el("lb-prev")) el("lb-prev").addEventListener("click", () => go(-1));
-  if (el("lb-next")) el("lb-next").addEventListener("click", () => go(1));
-}
-
-const MAX_RAIL_ROWS = 500;
-
-// ── The target rail: every target with a checkbox (all on by default) and a hover "only" link
-// that isolates it, Datadog-style. ──
-function railTargets() {
-  const needle = railFilter.trim().toLowerCase();
-  return needle
-    ? targets.filter((t) => t.attributes.name.toLowerCase().includes(needle))
-    : targets;
-}
-
-function setupTargetRail() {
-  const rail = el("target-rail");
-  rail.innerHTML =
-    '<div class="rail-head"><span class="rail-title">Targets</span>' +
-    '<span class="rail-meta" id="rail-meta"></span>' +
-    '<button type="button" class="rail-all" id="rail-all" hidden>All</button></div>' +
-    (targets.length > 100
-      ? '<input type="search" id="rail-search" class="target-search" placeholder="Filter ' + targets.length + ' targets…" autocomplete="off" />'
-      : "") +
-    '<div class="rail-list" id="rail-list"></div>' +
-    '<p class="rail-note" id="rail-note" hidden></p>';
-  const search = rail.querySelector("#rail-search");
-  if (search) {
-    search.addEventListener("input", () => {
-      railFilter = search.value;
-      renderRailList();
-    });
-  }
-  rail.querySelector("#rail-all").addEventListener("click", () => {
-    selectedTargetIds = null;
-    renderRailList();
-    drawChart();
-  });
-  const list = rail.querySelector("#rail-list");
-  list.addEventListener("change", (e) => {
-    const id = e.target.dataset && e.target.dataset.id;
-    if (!id) return;
-    if (selectedTargetIds === null) selectedTargetIds = new Set(targets.map((t) => t.id));
-    if (e.target.checked) selectedTargetIds.add(id);
-    else selectedTargetIds.delete(id);
-    if (selectedTargetIds.size === targets.length) selectedTargetIds = null;
-    renderRailList();
-    drawChart();
-  });
-  list.addEventListener("click", (e) => {
-    const only = e.target.closest && e.target.closest(".rail-only");
-    if (!only) return;
-    e.preventDefault();
-    selectedTargetIds = new Set([only.dataset.id]);
-    renderRailList();
-    drawChart();
-  });
-  renderRailList();
-}
-
-function renderRailList() {
-  const matches = railTargets();
-  const shown = matches.slice(0, MAX_RAIL_ROWS);
-  el("rail-list").innerHTML = shown
-    .map((t) => {
-      const on = selectedTargetIds === null || selectedTargetIds.has(t.id);
-      return (
-        '<label class="rail-row">' +
-        '<input type="checkbox" data-id="' + esc(t.id) + '"' + (on ? " checked" : "") + " />" +
-        '<span class="rail-name" title="' + esc(t.attributes.name) + '">' + esc(t.attributes.name) + "</span>" +
-        '<button type="button" class="rail-only" data-id="' + esc(t.id) + '">only</button>' +
-        "</label>"
-      );
-    })
-    .join("");
-  const checked = selectedTargetIds === null ? targets.length : selectedTargetIds.size;
-  el("rail-meta").textContent = checked + "/" + targets.length;
-  el("rail-all").hidden = selectedTargetIds === null;
-  const note = el("rail-note");
-  note.hidden = matches.length <= MAX_RAIL_ROWS;
-  if (!note.hidden) note.textContent = "Showing " + MAX_RAIL_ROWS + " of " + matches.length + " — refine the filter.";
-}
-
-/** The targets currently checked (all when nothing is deselected). */
+function passesTargetSel(t) { return valueChecked(TARGET_FIELD, t.id); }
 function activeTargets() {
-  return selectedTargetIds === null ? targets : targets.filter((t) => selectedTargetIds.has(t.id));
+  return targets.filter((t) => passesFacets(t) && passesTargetSel(t));
 }
+function targetsExcept(exceptField) {
+  return targets.filter((t) => {
+    const d = t.attributes.details || {};
+    for (const field of Object.keys(filters)) {
+      if (field === exceptField || field === TARGET_FIELD) continue;
+      if (!valueChecked(field, String(d[field]))) return false;
+    }
+    return exceptField === TARGET_FIELD || valueChecked(TARGET_FIELD, t.id);
+  });
+}
+function totalActiveFilters() { return Object.keys(filters).length; }
 
-// ── The metric picker: a checkbox dropdown; the table shows every checked metric as a column,
-// bars/line charts plot the primary (the chart default when checked, else the first checked). ──
+// ── Metric selection. Bars plot ONE metric (chosen in the bars header); the table shows a set of
+// metric columns (the Columns picker), defaulting to as many as fit without horizontal scroll. ──
 function defaultMetricSelection() {
   const names = metricList.map((m) => m.name);
   if (names.length <= 1) return names;
   const primary = chartDecl && names.includes(chartDecl.y) ? chartDecl.y : names[0];
   const ordered = [primary, ...names.filter((n) => n !== primary)];
-  // Fit heuristic: how many columns sit beside the target column without horizontal scrolling.
-  // Measure the data-main container (the chart div itself is only as wide as the bar grid, ~356px).
   const main = document.querySelector(".data-main");
   const width = (main && main.clientWidth) || el("chart").clientWidth || 900;
   const fit = Math.max(1, Math.floor((width - 300) / 140));
   const kept = ordered.slice(0, Math.min(fit, ordered.length));
-  return names.filter((n) => kept.includes(n)); // back to schema order
+  return names.filter((n) => kept.includes(n)); // schema order
 }
-
-function setupMetricControl() {
-  if (metricList.length <= 1) {
-    metricSelection = metricList.map((m) => m.name);
-    return;
-  }
-  if (!metricSelection.length) metricSelection = defaultMetricSelection(); // URL may have seeded it
-  const field = el("metric-field");
-  field.hidden = false;
-  const box = el("metric-dropdown");
-  box.innerHTML =
-    '<button type="button" class="dropdown-toggle" id="metric-toggle"></button>' +
-    '<div class="dropdown-panel" id="metric-panel" hidden></div>';
-  const toggle = el("metric-toggle");
-  const panel = el("metric-panel");
-  toggle.addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
-  });
-  document.addEventListener("click", (e) => {
-    if (!box.contains(e.target)) panel.hidden = true;
-  });
-  panel.addEventListener("change", (e) => {
-    const name = e.target.dataset && e.target.dataset.metric;
-    if (!name) return;
-    if (barsSingle()) {
-      // Bars plot exactly one metric — the radio replaces the selection outright.
-      metricSelection = [name];
-    } else {
-      const set = new Set(metricSelection);
-      if (e.target.checked) set.add(name);
-      else if (set.size > 1) set.delete(name); // never zero metrics
-      metricSelection = metricList.map((m) => m.name).filter((n) => set.has(n));
-    }
-    renderMetricControl();
-    drawChart();
-  });
-  panel.addEventListener("click", (e) => {
-    const only = e.target.closest && e.target.closest(".rail-only");
-    if (!only) return;
-    e.preventDefault();
-    metricSelection = [only.dataset.metric];
-    renderMetricControl();
-    drawChart();
-  });
-  renderMetricControl();
-}
-
-// Bars show one metric; the table shows any set of them. The metric control reflects that: a radio
-// list (single-select) in bars view, checkboxes in table/line view.
-function barsSingle() {
-  return chartMode === "CATEGORY" && chartView === "bars";
-}
-
-// The metric bars default to (the chart's declared headline, else the first) — kept out of the URL.
+function barsSingle() { return chartMode === "CATEGORY" && chartView === "bars"; }
 function defaultBarsMetric() {
   const names = metricList.map((m) => m.name);
   if (chartDecl && names.includes(chartDecl.y)) return chartDecl.y;
   return names.length ? names[0] : null;
 }
 
-function renderMetricControl() {
-  const panel = el("metric-panel");
+// ── The collapsible left filter panel. TARGET is the first "facet", then every derived facet. Each
+// section expands/collapses, lists its first 20 values alphabetically with Select all / only
+// quick-picks and a "+N more" reveal, and — only when it has >20 values — a search box. Counts are
+// live and faceted (a value's count reflects the other active filters). ──
+const TARGET_FIELD = "__target__";
+const SECTION_VALUE_LIMIT = 10; // first N values shown per facet (no inner scroll) before "+N more"
+const SECTION_SHOWALL_MAX = 400; // cap rows even when "+N more" is expanded (TARGET has 11.8k values)
+let panelCollapsed = false;
+let sectionState = {}; // field → { collapsed, search, showAll }
+let targetsByName = null;
+
+function sectionSt(field) {
+  if (!sectionState[field]) sectionState[field] = { collapsed: false, search: "", showAll: false };
+  return sectionState[field];
+}
+function ensureTargetsByName() {
+  if (!targetsByName) {
+    targetsByName = [...targets].sort((a, z) =>
+      a.attributes.name.localeCompare(z.attributes.name, undefined, { numeric: true, sensitivity: "base" }));
+  }
+  return targetsByName;
+}
+function panelSections() {
+  // Target always first (it isn't really a facet); the real facets follow in alphabetical order.
+  const facets = facetList
+    .map((f) => ({ field: f.field, label: facetLabel(f.field), isTarget: false }))
+    .sort((a, z) => a.label.localeCompare(z.label, undefined, { sensitivity: "base" }));
+  return [{ field: TARGET_FIELD, label: "Target", isTarget: true }, ...facets];
+}
+
+// A section's ordered candidate POOL. TARGET returns raw target rows (pre-sorted once, then filtered)
+// — no per-row object is built until the visible ≤20 slice is rendered, so an 11.8k-target benchmark
+// doesn't churn 11.8k allocations on every panel rebuild. Facets return the small {value,label,count}
+// list, counted over the OTHER active filters (so counts stay meaningful).
+function sectionPool(section) {
+  if (section.isTarget) return ensureTargetsByName().filter((t) => passesFacets(t));
+  const counts = new Map();
+  for (const t of targetsExcept(section.field)) {
+    const v = (t.attributes.details || {})[section.field];
+    if (v == null) continue;
+    const val = String(v);
+    counts.set(val, (counts.get(val) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, label: value, count }))
+    .sort((a, z) => a.label.localeCompare(z.label, undefined, { numeric: true, sensitivity: "base" }));
+}
+// Read a pool item uniformly, whether it's a raw target row (TARGET) or a facet-value object.
+function itemValue(section, it) { return section.isTarget ? it.id : it.value; }
+function itemLabel(section, it) { return section.isTarget ? it.attributes.name : it.label; }
+function itemCount(section, it) { return section.isTarget ? null : it.count; }
+
+// Section wrappers key the field-level model by section.field (TARGET_FIELD or a detail field).
+function toggleSectionValue(section, value, on) { setValueChecked(section.field, value, on); }
+function onlySectionValue(section, value) { onlyValue(section.field, value); }
+function clearSectionFilter(section) { clearField(section.field); }
+
+function renderFilterPanel() {
+  const panel = el("filter-panel");
   if (!panel) return;
-  const toggle = el("metric-toggle");
-  if (barsSingle()) {
-    // Collapse any carried-over multi-selection to the single plotted metric.
-    const y = currentY();
-    if (metricSelection.length !== 1 || metricSelection[0] !== y) metricSelection = [y];
-    toggle.textContent = "Metric · " + metricSelection[0];
-    panel.innerHTML = metricList
-      .map((m) => {
-        const on = m.name === metricSelection[0];
-        return (
-          '<label class="rail-row">' +
-          '<input type="radio" name="bars-metric" data-metric="' + esc(m.name) + '"' + (on ? " checked" : "") + " />" +
-          '<span class="rail-name" title="' + esc(m.name) + '">' + esc(m.name) + "</span>" +
-          "</label>"
-        );
+  applyPanelCollapse();
+  // Content is always built (even while collapsed) so the slide animation has something to move; CSS
+  // (.panel-collapsed on the layout) hides/animates it. Nothing here scrolls — the whole page does.
+  const active = activeTargets();
+  // No collapse chevron — the filter icon in the toolbar opens/closes the panel. The match count
+  // moves into the Target section header (see buildSection). A "Clear all" appears only when active.
+  // A persistent header ("Filters" left, "Clear all" right when active) so the panel never shifts
+  // when Clear all appears/disappears.
+  const head =
+    '<div class="panel-head"><span class="panel-title">Filters</span>' +
+    (totalActiveFilters() ? '<button type="button" class="panel-clear" id="panel-clear">Clear all</button>' : "") +
+    "</div>";
+  panel.innerHTML =
+    '<div class="panel-inner">' +
+    head +
+    '<div class="panel-sections" id="panel-sections"></div>' +
+    "</div>";
+  const clear = el("panel-clear");
+  if (clear) clear.addEventListener("click", () => { filters = {}; renderFilterPanel(); drawChart(); });
+  const box = el("panel-sections");
+  for (const section of panelSections()) box.appendChild(buildSection(section, active.length));
+}
+
+// Slide the panel in/out purely via a class on the layout, so the persistent .panel-inner element
+// keeps its identity and CSS-transitions (rebuilding the DOM would skip the animation).
+function applyPanelCollapse() {
+  const layout = document.querySelector('.tab-panel[data-panel="data"] .data-layout');
+  if (layout) layout.classList.toggle("panel-collapsed", panelCollapsed);
+  syncFilterToggle();
+}
+
+// The filter-bar toggle mirrors panel state: "active" when open, badged with the live filter count.
+function syncFilterToggle() {
+  const btn = el("filter-toggle");
+  if (!btn) return;
+  const n = totalActiveFilters();
+  btn.innerHTML = ICONS.filter + (n ? '<span class="filter-count">' + n + "</span>" : "");
+  btn.classList.toggle("active", !panelCollapsed);
+  btn.setAttribute("aria-pressed", String(!panelCollapsed));
+}
+
+function buildSection(section, activeCount) {
+  const st = sectionSt(section.field);
+  const wrap = document.createElement("div");
+  wrap.className = "facet-section" + (st.collapsed ? " collapsed" : "");
+  // The Target section carries the "matching of total" count on the right (it replaces the old
+  // panel-wide count line); other facets show a badge with how many values the filter touches, but
+  // only while the facet is active (not all-checked).
+  const f = section.isTarget ? null : filters[section.field];
+  const right = section.isTarget
+    ? '<span class="facet-header-count">' + Number(activeCount || 0).toLocaleString() + " of " + targets.length.toLocaleString() + "</span>"
+    : (f ? '<span class="facet-badge">' + f.set.size + "</span>" : "");
+  wrap.innerHTML =
+    '<button type="button" class="facet-header">' +
+    '<span class="facet-chevron">' + (st.collapsed ? ICONS.chevronRight : ICONS.chevronDown) + "</span>" +
+    '<span class="facet-title">' + esc(section.label) + "</span>" +
+    right +
+    "</button>" +
+    '<div class="facet-body"></div>';
+  wrap.querySelector(".facet-header").addEventListener("click", () => {
+    st.collapsed = !st.collapsed;
+    wrap.classList.toggle("collapsed", st.collapsed);
+    wrap.querySelector(".facet-chevron").innerHTML = st.collapsed ? ICONS.chevronRight : ICONS.chevronDown;
+    renderSectionBody(section, wrap);
+  });
+  if (!st.collapsed) renderSectionBody(section, wrap);
+  return wrap;
+}
+
+function renderSectionBody(section, wrap) {
+  const body = wrap.querySelector(".facet-body");
+  const st = sectionSt(section.field);
+  if (st.collapsed) { body.innerHTML = ""; return; }
+  const pool = sectionPool(section);
+  wrap.__pool = pool;
+  const hasSearch = pool.length > SECTION_VALUE_LIMIT;
+  let html = "";
+  if (hasSearch) {
+    html += '<input type="search" class="facet-search" placeholder="Search ' + esc(section.label.toLowerCase()) +
+      '…" value="' + esc(st.search) + '" autocomplete="off">';
+  }
+  if (fieldActive(section.field)) {
+    html += '<div class="facet-actions"><button type="button" class="facet-all">Select all</button></div>';
+  }
+  html += '<div class="facet-values"></div><button type="button" class="facet-more" hidden></button>';
+  body.innerHTML = html;
+  updateSectionValues(section, wrap);
+  const search = body.querySelector(".facet-search");
+  if (search) {
+    let t = null;
+    search.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        // A full panel rebuild (from a checkbox/only/clear anywhere) can fire this after our node is
+        // detached — bail so we don't clobber st.search or write into an orphaned subtree.
+        if (!body.isConnected) return;
+        st.search = search.value; st.showAll = false; updateSectionValues(section, wrap);
+      }, 150);
+    });
+  }
+  const allBtn = body.querySelector(".facet-all");
+  if (allBtn) allBtn.addEventListener("click", () => { clearSectionFilter(section); renderFilterPanel(); drawChart(); });
+}
+
+function updateSectionValues(section, wrap) {
+  const body = wrap.querySelector(".facet-body");
+  const st = sectionSt(section.field);
+  const pool = wrap.__pool || sectionPool(section);
+  const needle = st.search.trim().toLowerCase();
+  const filtered = needle ? pool.filter((it) => itemLabel(section, it).toLowerCase().includes(needle)) : pool;
+  // Build DOM only for the visible slice (≤20, or ≤SECTION_SHOWALL_MAX when expanded).
+  const shown = filtered.slice(0, st.showAll ? SECTION_SHOWALL_MAX : SECTION_VALUE_LIMIT);
+  const more = filtered.length - shown.length;
+  const valsEl = body.querySelector(".facet-values");
+  valsEl.innerHTML =
+    shown
+      .map((it) => {
+        const value = itemValue(section, it), label = itemLabel(section, it), count = itemCount(section, it);
+        const on = valueChecked(section.field, value);
+        return '<label class="facet-row"><input type="checkbox" data-value="' + esc(value) + '"' + (on ? " checked" : "") + ">" +
+          '<span class="facet-val" title="' + esc(label) + '">' + esc(label) + "</span>" +
+          (count != null ? '<span class="facet-count">' + count.toLocaleString() + "</span>" : "") +
+          '<button type="button" class="facet-only" data-value="' + esc(value) + '">only</button></label>';
       })
-      .join("");
+      .join("") + (shown.length ? "" : '<p class="facet-empty muted">No matches.</p>');
+  const moreBtn = body.querySelector(".facet-more");
+  if (more > 0) {
+    // A big overflow (>99 hidden) isn't clickable — expanding would render hundreds of checkboxes;
+    // point the user at the search box instead. A small overflow stays a click-to-reveal.
+    const tooMany = more > 99;
+    moreBtn.hidden = false;
+    moreBtn.disabled = st.showAll || tooMany;
+    moreBtn.textContent = (st.showAll || tooMany) ? more.toLocaleString() + " more — search to narrow" : "+" + more.toLocaleString() + " more";
+  } else moreBtn.hidden = true;
+  valsEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+    cb.addEventListener("change", () => { toggleSectionValue(section, cb.dataset.value, cb.checked); renderFilterPanel(); drawChart(); });
+  });
+  valsEl.querySelectorAll(".facet-only").forEach((b) => {
+    b.addEventListener("click", (e) => { e.preventDefault(); onlySectionValue(section, b.dataset.value); renderFilterPanel(); drawChart(); });
+  });
+  if (moreBtn && !moreBtn.__wired) {
+    moreBtn.__wired = true;
+    moreBtn.addEventListener("click", () => { if (!moreBtn.disabled) { st.showAll = true; updateSectionValues(section, wrap); } });
+  }
+}
+
+// ── The filter bar's per-view controls (into #bar-controls): bars get a metric picker + a
+// sort-direction select; the table gets a which-columns picker. ──
+let colsDocHandler = null; // the table Columns dropdown's outside-click closer (dedup'd each render)
+function renderBarControls() {
+  const box = el("bar-controls");
+  if (!box) return;
+  box.innerHTML = "";
+  // Drop the previous Columns-dropdown document listener so it can't accumulate across re-renders.
+  if (colsDocHandler) { document.removeEventListener("click", colsDocHandler); colsDocHandler = null; }
+  if (chartMode !== "CATEGORY") return;
+  if (chartView === "bars") {
+    const metricSel =
+      metricList.length > 1
+        ? '<label class="field"><span class="vh">Metric</span><select id="metric-select" class="bar-select">' +
+          metricList
+            .map((m) => {
+              const label = titleCase(m.name) + (metricUnit(m.name) ? " (" + metricUnit(m.name) + ")" : "");
+              return '<option value="' + esc(m.name) + '"' + (m.name === currentY() ? " selected" : "") + ">" + esc(label) + "</option>";
+            })
+            .join("") + "</select></label>"
+        : "";
+    const sortSel =
+      '<label class="field"><span class="vh">Sort direction</span><select id="sort-select" class="bar-select">' +
+      '<option value="desc"' + (barsDesc ? " selected" : "") + ">Descending</option>" +
+      '<option value="asc"' + (!barsDesc ? " selected" : "") + ">Ascending</option></select></label>";
+    box.innerHTML = metricSel + sortSel;
+    const ms = el("metric-select");
+    if (ms) ms.addEventListener("change", () => { metricSelection = [ms.value]; drawChart(); });
+    el("sort-select").addEventListener("change", (e) => { barsDesc = e.target.value === "desc"; drawChart(); });
     return;
   }
-  toggle.textContent = "Metrics · " + metricSelection.length + "/" + metricList.length;
-  panel.innerHTML = metricList
-    .map((m) => {
-      const on = metricSelection.includes(m.name);
-      return (
-        '<label class="rail-row">' +
-        '<input type="checkbox" data-metric="' + esc(m.name) + '"' + (on ? " checked" : "") + " />" +
-        '<span class="rail-name" title="' + esc(m.name) + '">' + esc(m.name) + "</span>" +
-        '<button type="button" class="rail-only" data-metric="' + esc(m.name) + '">only</button>' +
-        "</label>"
-      );
-    })
-    .join("");
+  // Table: a Columns checkbox dropdown (which metric columns to show).
+  if (metricList.length <= 1) return;
+  box.innerHTML =
+    '<div class="field"><div class="dropdown" id="cols-dd">' +
+    '<button type="button" class="dropdown-toggle" id="cols-toggle"></button>' +
+    '<div class="dropdown-panel" id="cols-panel" hidden></div></div></div>';
+  const dd = el("cols-dd"), toggle = el("cols-toggle"), panel = el("cols-panel");
+  toggle.addEventListener("click", () => { panel.hidden = !panel.hidden; });
+  colsDocHandler = (e) => { if (!dd.contains(e.target)) panel.hidden = true; };
+  document.addEventListener("click", colsDocHandler);
+  const paint = () => {
+    toggle.textContent = "Columns · " + metricSelection.length + "/" + metricList.length;
+    panel.innerHTML =
+      '<div class="facet-actions"><button type="button" class="facet-all" data-cols-all="1">Select all</button></div>' +
+      metricList
+        .map((m) => {
+          const on = metricSelection.includes(m.name);
+          return '<label class="rail-row"><input type="checkbox" data-metric="' + esc(m.name) + '"' + (on ? " checked" : "") + " />" +
+            '<span class="rail-name" title="' + esc(m.name) + '">' + esc(m.name) + "</span>" +
+            '<button type="button" class="facet-only" data-cols-only="' + esc(m.name) + '">only</button></label>';
+        })
+        .join("");
+  };
+  panel.addEventListener("change", (e) => {
+    const name = e.target.dataset && e.target.dataset.metric;
+    if (!name) return;
+    const set = new Set(metricSelection);
+    if (e.target.checked) set.add(name); else if (set.size > 1) set.delete(name); // never zero
+    metricSelection = metricList.map((m) => m.name).filter((n) => set.has(n));
+    paint(); drawChart();
+  });
+  // Select all / per-column "only" (mirrors the facet quick-picks).
+  panel.addEventListener("click", (e) => {
+    const only = e.target.closest && e.target.closest("[data-cols-only]");
+    const all = e.target.closest && e.target.closest("[data-cols-all]");
+    if (!only && !all) return;
+    e.preventDefault();
+    metricSelection = only ? [only.dataset.colsOnly] : metricList.map((m) => m.name);
+    paint(); drawChart();
+  });
+  paint();
 }
 
 function setupChartControls() {
-  setupTargetRail();
-  setupMetricControl();
+  facetList = deriveFacets();
 
   // Range only applies to time-series charts.
   if (chartMode !== "TIME" && el("range-field")) el("range-field").hidden = true;
 
-  // CATEGORY benchmarks get a visualization picker (ranked bars, or a sortable table of every
-  // metric per target) — a two-option segmented control, radio semantics.
+  // The filters live in the collapsible left panel; the filter-bar toggle shows/hides it (and, when
+  // collapsed, is the only filter affordance — the panel takes zero width).
+  const filterToggle = el("filter-toggle");
+  if (filterToggle) {
+    filterToggle.hidden = false;
+    filterToggle.addEventListener("click", () => { panelCollapsed = !panelCollapsed; applyPanelCollapse(); });
+  }
+  renderFilterPanel();
+
   if (chartMode === "CATEGORY") {
-    const field = document.createElement("div");
-    field.className = "field";
-    field.innerHTML =
-      "<label>View</label>" +
+    if (chartView === "bars" && metricSelection.length !== 1) metricSelection = [currentY()];
+    if (chartView === "table" && !metricSelection.length) metricSelection = defaultMetricSelection();
+    // View picker (Bars | Table) — no "View" label, slid to the right (before Share/Download).
+    const view = el("view-controls");
+    view.innerHTML =
       '<div class="segmented" role="radiogroup" aria-label="View">' +
-      '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") +
-      '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
-      '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") +
-      '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
+      '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
+      '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
       "</div>";
-    const metricField = el("metric-field");
-    metricField.parentElement.insertBefore(field, metricField);
-    field.querySelectorAll(".seg-option").forEach((btn) => {
+    view.querySelectorAll(".seg-option").forEach((btn) => {
       btn.addEventListener("click", () => {
         if (btn.dataset.view === chartView) return;
         chartView = btn.dataset.view;
-        field.querySelectorAll(".seg-option").forEach((b) => {
+        view.querySelectorAll(".seg-option").forEach((b) => {
           const on = b === btn;
           b.classList.toggle("active", on);
           b.setAttribute("aria-checked", String(on));
         });
-        // The table is where you see everything, so entering it shows all metrics (the wrap scrolls
-        // if they overflow); bars collapse to one (renderMetricControl handles it).
-        if (chartView === "table") metricSelection = metricList.map((m) => m.name);
-        renderMetricControl();
+        // Bars ⇒ one metric; Table ⇒ the fitting column set (or a carried-over multi-selection).
+        if (chartView === "table") metricSelection = metricSelection.length > 1 ? metricSelection : defaultMetricSelection();
+        else metricSelection = [currentY()];
         tableSort = { key: null, desc: true };
+        renderBarControls();
         drawChart();
       });
     });
+    renderBarControls();
   }
 
   if (el("range")) {
@@ -1965,13 +1957,19 @@ function setupChartControls() {
       drawChart();
     });
   }
+
+  // Share / Download are icon-only buttons that pop a modal of choices.
   const actions = el("chart-actions");
-  actions.innerHTML = shareMenuHtml() + downloadMenuHtml();
-  wireShareMenu(actions);
-  wireDownloadMenu(actions, {
-    csv: () => downloadObservations("text/csv", "csv"),
-    json: () => downloadObservations("application/vnd.api+json", "json"),
-  });
+  actions.innerHTML =
+    '<button type="button" class="btn icon-btn" id="share-btn" title="Share this view" aria-label="Share this view">' + ICONS.share + "</button>" +
+    '<button type="button" class="btn icon-btn" id="download-btn" title="Download data" aria-label="Download data">' + ICONS.download + "</button>";
+  el("share-btn").addEventListener("click", openShareModal);
+  el("download-btn").addEventListener("click", () =>
+    openDownloadModal({
+      csv: () => downloadObservations("text/csv", "csv"),
+      json: () => downloadObservations("application/vnd.api+json", "json"),
+    }),
+  );
 }
 
 init();

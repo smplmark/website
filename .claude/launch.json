@@ -2,14 +2,14 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dev",
+      "name": "website",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "port": 8787,
       "autoPort": true
     },
     {
-      "name": "api",
+      "name": "app",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "../smplmark-app"],
       "port": 8788,
