@@ -87,9 +87,9 @@ function cardSource(a) {
   );
 }
 
-// The home page is a teaser, not the catalog: it shows only the most recent benchmarks and sends
-// visitors to /benchmarks (the full, filterable browse) for everything else.
-var HOME_RECENT_LIMIT = 50;
+// The home page is a teaser, not the catalog: it shows only the top most-viewed benchmarks and
+// sends visitors to /benchmarks (the full, filterable browse) for everything else.
+var HOME_TOP_LIMIT = 20;
 
 // Sort menu: newest (most recently published) plus reddit-style popularity windows.
 var SORT_OPTIONS = [
@@ -259,13 +259,15 @@ async function load() {
   if (filters.category) qs.set("filter[category]", filters.category);
   if (filters.tag) qs.set("filter[tag]", filters.tag);
   if (filters.q) qs.set("filter[search]", filters.q);
-  // Home page: cap at the most recent benchmarks.
-  if (!filterable) qs.set("page[size]", String(HOME_RECENT_LIMIT));
+  // Home page: cap at the top most-viewed benchmarks.
+  if (!filterable) qs.set("page[size]", String(HOME_TOP_LIMIT));
 
-  // "Newest" means most recently published — the public site's recency semantic. An API version that
-  // predates the published_at sort 400s it, so fall back to -created_at (also newest-first) to stay
-  // functional across a website/app deploy skew. An explicit user sort is used as-is (no fallback).
-  const desiredSort = "-" + (filters.sort || "published_at");
+  // The home teaser defaults to most-viewed (all time); the filterable /benchmarks list defaults to
+  // "Newest" (most recently published). An API version that predates a default sort 400s it, so fall
+  // back to -created_at (also newest-first) to stay functional across a website/app deploy skew. An
+  // explicit user sort is used as-is (no fallback).
+  const defaultSort = filterable ? "published_at" : "views";
+  const desiredSort = "-" + (filters.sort || defaultSort);
   function urlWith(sort) {
     const p = new URLSearchParams(qs);
     p.set("sort", sort);

@@ -19,21 +19,26 @@
   <link rel="icon" href="/img/favicon.svg" type="image/svg+xml" />
   <link rel="icon" href="/img/favicon-32.png" sizes="32x32" type="image/png" />
   <link rel="apple-touch-icon" href="/img/apple-touch-icon.png" />
+  <script>(function(){try{var m=document.cookie.match(/(?:^|; )smplmark-theme=(light|dark)/);var t=m?m[1]:localStorage.getItem('smplmark-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+  <script defer src="/js/theme.js"></script>
   <link rel="stylesheet" href="/css/app.css" />
 </head>
 <body>
   <header class="site">
     <div class="wrap">
-      <a class="brand" href="/"><picture>
-        <source srcset="/img/logo-light.png" media="(prefers-color-scheme: light)" />
-        <img src="/img/logo-dark.png" alt="smplmark" width="108" height="22" />
-      </picture></a>
+      <a class="brand" href="/" aria-label="smplmark"></a>
       <nav>
         <a href="/benchmarks">Benchmarks</a>
         <a href="/about">About</a>
         <a href="/api-reference">API Reference</a>
         <a href="/login">Sign in</a>
         <a href="/signup" class="nav-cta">Sign up</a>
+        <button class="theme-toggle" type="button" role="switch" aria-label="Dark mode">
+          <span class="knob">
+            <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+            <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </span>
+        </button>
       </nav>
     </div>
   </header>

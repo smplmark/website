@@ -1,5 +1,9 @@
-/* Dark is the default theme; light is applied when the user's OS prefers it. */
+/* Dark is the default theme (used when the OS expresses no preference). Light applies automatically
+   when the OS prefers it — UNLESS the visitor has explicitly picked a theme with the header switch,
+   which sets data-theme on <html> (persisted; see js/theme.js). An explicit choice always wins over
+   the OS preference: the light rules below are gated on :not([data-theme="dark"]) / [data-theme="light"]. */
 :root {
+  color-scheme: dark;
   --bg: #0e1116;
   --panel: #161b22;
   --panel-2: #1c2330;
@@ -10,6 +14,7 @@
   --accent-2: #f78166;
   --ok: #3fb950;
   --tab-active-bg: #1c2330;
+  --logo: url(/img/logo-dark.png);
   --radius: 10px;
   --maxw: 1040px;
   --contentw: 720px;
@@ -19,8 +24,12 @@
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
+/* The light palette is declared twice on purpose — CSS can't share one block between a media query
+   and a plain selector. Once for "OS prefers light and the visitor hasn't forced dark", once for the
+   explicit light choice. Keep the two value lists in sync. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
     --bg: #f6f8fa;
     --panel: #ffffff;
     --panel-2: #f1f4f8;
@@ -31,7 +40,23 @@
     --accent-2: #d1481f;
     --ok: #1a7f37;
     --tab-active-bg: #ffffff;
+    --logo: url(/img/logo-light.png);
   }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --panel-2: #f1f4f8;
+  --border: #d6dce4;
+  --text: #1f2328;
+  --muted: #5b6570;
+  --accent: #2f6fe0;
+  --accent-2: #d1481f;
+  --ok: #1a7f37;
+  --tab-active-bg: #ffffff;
+  --logo: url(/img/logo-light.png);
 }
 
 * { box-sizing: border-box; }
@@ -68,8 +93,9 @@ header.site .wrap {
   gap: 20px;
   height: 58px;
 }
-.brand { display: inline-flex; align-items: center; }
-.brand img { height: 22px; width: auto; display: block; }
+/* Wordmark as a background image so it tracks the resolved theme (--logo), including an explicit
+   header-switch choice — a <picture media> source could only follow the OS preference. */
+.brand { display: block; width: 108px; height: 22px; background: var(--logo) no-repeat left center; background-size: contain; }
 header.site nav { display: flex; align-items: center; gap: 20px; margin-left: auto; }
 header.site nav a { color: var(--muted); font-size: 14px; }
 header.site nav a:hover { color: var(--text); }
@@ -450,6 +476,44 @@ header.site nav a.nav-cta {
 }
 header.site nav a.nav-cta:hover { color: #fff; filter: brightness(1.12); }
 
+/* Header light/dark switch — a sliding toggle. The knob sits left in light contexts and slides right
+   in dark ones, carrying the sun/moon glyph. Both the knob position and the glyph are chosen purely
+   in CSS, mirroring the palette cascade above, so the switch is already in the right position (no
+   slide-in, no wrong glyph) before js/theme.js runs. */
+.theme-toggle {
+  position: relative;
+  box-sizing: border-box;
+  width: 46px; height: 26px; padding: 0;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--panel-2);
+  cursor: pointer; vertical-align: middle;
+  transition: border-color .15s, background .18s;
+}
+.theme-toggle:hover { border-color: var(--accent); }
+.theme-toggle .knob {
+  position: absolute; top: 50%; left: 2px;
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  /* Dark is the default → knob to the right. */
+  transform: translate(20px, -50%);
+  transition: transform .2s cubic-bezier(.3, .1, .3, 1);
+}
+/* Size only — leave `display` to the .sun/.moon rules below, or their `display:none` would lose the
+   specificity battle to a `.theme-toggle .knob svg` display declaration and both glyphs would show. */
+.theme-toggle .knob svg { width: 12px; height: 12px; }
+.theme-toggle .sun { display: none; }
+.theme-toggle .moon { display: block; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .theme-toggle .knob { transform: translate(0, -50%); }
+  :root:not([data-theme="dark"]) .theme-toggle .sun { display: block; }
+  :root:not([data-theme="dark"]) .theme-toggle .moon { display: none; }
+}
+:root[data-theme="light"] .theme-toggle .knob { transform: translate(0, -50%); }
+:root[data-theme="light"] .theme-toggle .sun { display: block; }
+:root[data-theme="light"] .theme-toggle .moon { display: none; }
+
 /* Footer brand: proper copyright line, TM as a true superscript. */
 footer.site .footer-brand sup { font-size: 0.62em; line-height: 0; }
 
@@ -484,6 +548,13 @@ footer.site a.gh svg { display: block; }
 @media (max-width: 800px) {
   .data-layout, .data-layout.panel-collapsed { grid-template-columns: minmax(0, 1fr); }
 }
+/* The worker server-renders a full crawlable fallback into #ssr-content (overview, metrics, the whole
+   target list, methodology); the viewer removes it on hydration and renders the compact interactive
+   UI. On a JS-capable client (marked with .js in benchmark.html's head) hide the fallback before it
+   ever paints, so there's no flash of the long untruncated target list before the rail appears.
+   Clients that don't run JS never get the .js class, so they keep the crawlable fallback. */
+.js #ssr-content { display: none; }
+
 .target-rail {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
   padding: 12px; max-height: 560px; display: flex; flex-direction: column;
