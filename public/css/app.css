@@ -350,9 +350,10 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .u-legend .u-marker { border-radius: 2px; }
 
 footer.site { border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; margin-top: 40px; }
-footer.site .wrap { padding: 22px 20px; display: flex; gap: 16px; align-items: center; }
+footer.site .wrap { padding: 22px 20px 12px; display: flex; gap: 16px; align-items: center; }
 footer.site a { color: var(--muted); }
 footer.site a:hover { color: var(--text); }
+footer.site .footer-legal { max-width: var(--maxw); margin: 0 auto; padding: 0 20px 22px; }
 
 /* ── High-cardinality chart controls ── */
 .field input.target-search {
