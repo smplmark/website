@@ -432,6 +432,13 @@ async function init() {
   setupTabs();
 
   el("tabs-wrap").hidden = false;
+
+  // Every public benchmark (published or withdrawn) carries the quiet takedown-request affordance.
+  const takedown = el("takedown-line");
+  if (takedown) {
+    takedown.hidden = false;
+    el("takedown-link").addEventListener("click", openTakedownModal);
+  }
 }
 
 function inferChart(metrics) {
@@ -665,9 +672,72 @@ async function renderStats() {
     "</tbody></table>";
 }
 
-// ── Tabs — hash-routed (#overview/#data/#metrics/#methodology/#publisher/#stats) so refresh
-// restores the tab and the back button walks tab history. ──
-const TAB_NAMES = ["overview", "data", "metrics", "methodology", "stats", "publisher"];
+// ── History tab — the benchmark's public change record (§8 credibility: every post-publish edit,
+// correction, withdrawal, or removal is on the record). Fetched lazily on first open, like Stats. ──
+let historyLoaded = false;
+
+// Short human labels for the audit event types; an unknown type falls back to the raw string.
+const HISTORY_EVENT_LABELS = {
+  "benchmark.published": "Published",
+  "benchmark.edited": "Edited",
+  "benchmark.closed": "Closed to new data",
+  "benchmark.reopened": "Reopened to new data",
+  "benchmark.withdrawn": "Withdrawn",
+  "benchmark.taken_down": "Removed by operators",
+  "run.created": "Run created",
+  "run.ended": "Run ended",
+  "run.reopened": "Run reopened",
+  "run.appended": "Run appended",
+  "run.invalidated": "Run invalidated",
+  "run.edited": "Run edited",
+  "measurement.created": "Measurement created",
+  "measurement.corrected": "Measurement corrected",
+};
+
+function historyRow(e) {
+  const at = e.attributes || {};
+  const label = HISTORY_EVENT_LABELS[at.event_type] || at.event_type || "";
+  const semantic = at.semantic_core
+    ? ' <span class="pill semantic" title="This change affects the meaning of the published results.">semantic change</span>'
+    : "";
+  const actor = at.actor && at.actor.label ? at.actor.label : "";
+  return (
+    '<tr><td class="history-date" title="' + esc(at.occurred_at || "") + '">' + esc(fmtDate(at.occurred_at)) + "</td>" +
+    '<td class="history-event">' + esc(label) + semantic + "</td>" +
+    '<td class="history-desc">' + esc(at.description || "") + "</td>" +
+    '<td class="history-actor">' + esc(actor) + "</td></tr>"
+  );
+}
+
+async function renderHistory() {
+  const box = el("history-body");
+  if (!box) return;
+  box.innerHTML = '<p class="history-note">Loading…</p>';
+  let events;
+  try {
+    const doc = await fetchJson(API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/history");
+    events = Array.isArray(doc.data) ? doc.data : [];
+  } catch (_) {
+    // Covers 503 (audit store temporarily unavailable) and any fetch failure — a muted line, never
+    // a broken page.
+    box.innerHTML = '<p class="history-note">History is temporarily unavailable.</p>';
+    return;
+  }
+  if (!events.length) {
+    box.innerHTML = '<p class="history-note">No public history recorded for this benchmark.</p>';
+    return;
+  }
+  // Events arrive newest first — render them in that order.
+  box.innerHTML =
+    '<table class="history-table"><thead><tr>' +
+    "<th>Date</th><th>Event</th><th>Description</th><th>By</th></tr></thead><tbody>" +
+    events.map(historyRow).join("") +
+    "</tbody></table>";
+}
+
+// ── Tabs — hash-routed (#overview/#data/#metrics/#methodology/#publisher/#stats/#history) so
+// refresh restores the tab and the back button walks tab history. ──
+const TAB_NAMES = ["overview", "data", "metrics", "methodology", "stats", "history", "publisher"];
 function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
@@ -676,6 +746,9 @@ function activateTab(name, updateHash = true) {
   } else if (name === "stats" && !statsLoaded) {
     statsLoaded = true;
     renderStats();
+  } else if (name === "history" && !historyLoaded) {
+    historyLoaded = true;
+    renderHistory();
   }
   if (updateHash && location.hash !== "#" + name) location.hash = name;
 }
@@ -1508,6 +1581,76 @@ function openDownloadModal(downloads) {
   openModal("Download data", body, (root) => {
     root.querySelector('[data-act="csv"]').addEventListener("click", () => { closeModal(); downloads.csv(); });
     root.querySelector('[data-act="json"]').addEventListener("click", () => { closeModal(); downloads.json(); });
+  });
+}
+
+// ── Request takedown — files a request for smplmark operators to review; it deletes nothing by
+// itself. Anonymous POST (rate-limited server-side), available on every public benchmark page
+// (published and withdrawn alike). ──
+function openTakedownModal() {
+  const body =
+    '<div class="takedown-form">' +
+    '<p class="takedown-note">This sends a takedown request to smplmark operators for review. ' +
+    "Nothing is removed until an operator acts on it.</p>" +
+    '<label class="modal-field"><span>Name</span>' +
+    '<input type="text" id="td-name" autocomplete="name"></label>' +
+    '<label class="modal-field"><span>Email</span>' +
+    '<input type="email" id="td-email" autocomplete="email"></label>' +
+    '<label class="modal-field"><span>Reason</span>' +
+    '<textarea id="td-reason" rows="4" placeholder="Why should this benchmark be taken down?"></textarea></label>' +
+    '<p class="modal-error" id="td-error" hidden></p>' +
+    '<button type="button" class="btn primary" id="td-submit">Submit request</button>' +
+    "</div>";
+  openModal("Request takedown", body, (root) => {
+    const btn = root.querySelector("#td-submit");
+    const errorLine = root.querySelector("#td-error");
+    const showError = (msg) => { errorLine.textContent = msg; errorLine.hidden = false; };
+    btn.addEventListener("click", async () => {
+      const name = root.querySelector("#td-name").value.trim();
+      const email = root.querySelector("#td-email").value.trim();
+      const reason = root.querySelector("#td-reason").value.trim();
+      if (!name || !email || !reason) {
+        showError("Name, email, and reason are all required.");
+        return;
+      }
+      errorLine.hidden = true;
+      btn.disabled = true;
+      btn.textContent = "Submitting…";
+      try {
+        const res = await fetch(API + "/api/v1/takedown_requests", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/vnd.api+json",
+            Accept: "application/vnd.api+json",
+          },
+          body: JSON.stringify({
+            data: {
+              type: "takedown_request",
+              attributes: {
+                benchmark: benchmark.id,
+                requester_name: name,
+                requester_email: email,
+                reason: reason,
+              },
+            },
+          }),
+        });
+        if (!res.ok) {
+          const detail = await errorDetail(res);
+          throw new Error(
+            res.status === 429 && detail === "HTTP 429"
+              ? "Too many requests — please try again later."
+              : detail,
+          );
+        }
+        root.innerHTML =
+          '<p class="takedown-confirm">Request received. smplmark operators will review it.</p>';
+      } catch (err) {
+        showError(err.message);
+        btn.disabled = false;
+        btn.textContent = "Submit request";
+      }
+    });
   });
 }
 

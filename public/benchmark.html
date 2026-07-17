@@ -61,6 +61,7 @@
           <button class="tab" data-tab="metrics">Metrics</button>
           <button class="tab" data-tab="methodology">Methodology</button>
           <button class="tab" data-tab="stats">Stats</button>
+          <button class="tab" data-tab="history">History</button>
           <button class="tab" data-tab="publisher">Publisher</button>
         </div>
 
@@ -109,12 +110,22 @@
           <div id="stats-body"></div>
         </section>
 
+        <section class="tab-panel" data-panel="history">
+          <div id="history-body"></div>
+        </section>
+
         <section class="tab-panel" data-panel="publisher">
           <div class="publisher" id="publisher-body"></div>
         </section>
       </div>
 
       <div id="load-status" class="status"></div>
+
+      <!-- Quiet foot-of-page affordance: files a takedown request for operator review (it removes
+           nothing by itself). Unhidden by the viewer once a public benchmark has loaded. -->
+      <p class="takedown-line" id="takedown-line" hidden>
+        <button type="button" class="takedown-link" id="takedown-link">Request takedown</button>
+      </p>
     </div>
   </main>
 
