@@ -1,3 +1,9 @@
-# Local-loop only (wrangler dev loads this file; production never sees it): app-host redirects
-# (/login, /api-reference, /api/*) target the local app Worker instead of app.smplmark.org.
-DEV_APP_ORIGIN=http://localhost:8788
+# Local-loop dev-only vars/secrets (wrangler dev loads this file; production never sees it).
+#
+# DEV_APP_ORIGIN is intentionally NOT set here — the npm scripts provide it via `--var`, so it stays
+# the single switch for where the local site reads data (SSR fetches + app-host redirects + the
+# client viewer, via window.SM_API_BASE injected by the Worker):
+#   npm run dev         → http://localhost:8788      (local app Worker + local D1)
+#   npm run dev:remote  → https://app.smplmark.org   (production data, no ?api= needed)
+#
+# Add any real dev-only secrets below.

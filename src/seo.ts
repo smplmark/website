@@ -25,9 +25,9 @@ const CATEGORY_LABELS: Record<string, string> = {
   OTHER: "Other",
 };
 
-// Cap the SSR target list so a 5,000-target benchmark can't bloat the page; the interactive viewer
+// Cap the SSR subject list so a 5,000-subject benchmark can't bloat the page; the interactive viewer
 // shows them all. The head-line metadata already carries the count.
-const SSR_TARGET_LIMIT = 50;
+const SSR_SUBJECT_LIMIT = 50;
 
 // ── The minimal API shapes we read (the app's JSON:API responses) ────────────
 
@@ -36,7 +36,7 @@ interface MetricDecl {
   unit?: unknown;
 }
 
-interface ObservationSchema {
+interface MeasurementSchema {
   metrics?: MetricDecl[];
   derived?: MetricDecl[];
   chart?: { x_kind?: unknown };
@@ -50,6 +50,8 @@ interface PublishedAs {
   license?: unknown;
   display_name?: unknown;
   verified_domains?: unknown;
+  domain?: unknown; // ORGANIZATION publishes: the verified domain is the identity
+  icon?: unknown; // "monogram" | "favicon"
 }
 
 export interface BenchmarkAttributes {
@@ -64,7 +66,7 @@ export interface BenchmarkAttributes {
   status?: unknown;
   published_at?: unknown;
   updated_at?: unknown;
-  observation_schema?: ObservationSchema;
+  measurement_schema?: MeasurementSchema;
   published_as?: PublishedAs;
 }
 
@@ -73,7 +75,7 @@ export interface BenchmarkResource {
   attributes: BenchmarkAttributes;
 }
 
-export interface TargetResource {
+export interface SubjectResource {
   id: string;
   attributes: { key?: unknown; name?: unknown };
 }
@@ -105,7 +107,7 @@ function tagList(tags: unknown): string[] {
   return Array.isArray(tags) ? tags.filter((t): t is string => typeof t === "string" && t.length > 0) : [];
 }
 
-function metricNames(schema: ObservationSchema | undefined): string[] {
+function metricNames(schema: MeasurementSchema | undefined): string[] {
   const all = [...(schema?.metrics ?? []), ...(schema?.derived ?? [])];
   return all.map((m) => str(m?.name)).filter((n) => n.length > 0);
 }
@@ -139,7 +141,8 @@ export function canonicalUrl(publisher: string, key: string, siteOrigin = SITE_O
 
 function publisherName(pa: PublishedAs | undefined): string {
   if (!pa) return "";
-  return str(pa.source_name) || str(pa.name) || str(pa.display_name);
+  // ORGANIZATION publishes carry only the verified domain as their identity (no separate name).
+  return str(pa.source_name) || str(pa.name) || str(pa.display_name) || str(pa.domain);
 }
 
 // ── JSON-LD Dataset (Google Dataset Search) ──────────────────────────────────
@@ -184,7 +187,7 @@ export function datasetJsonLd(
   if (str(a.published_at)) ld.datePublished = str(a.published_at);
   if (str(a.updated_at)) ld.dateModified = str(a.updated_at);
 
-  const metrics = metricNames(a.observation_schema);
+  const metrics = metricNames(a.measurement_schema);
   if (metrics.length) ld.variableMeasured = metrics;
 
   const name = publisherName(pa);
@@ -242,7 +245,7 @@ export function benchmarkHeadExtras(
   // Social card: for chart/table benchmarks, unfurl the actual chart (a generated 1200×630 image);
   // for TIME series we'd need a bounded window we don't have at page level, so keep the logo. The
   // large-image Twitter card shows the chart prominently; the logo uses the plain summary card.
-  const xKind = a.observation_schema?.chart?.x_kind;
+  const xKind = a.measurement_schema?.chart?.x_kind;
   const hasChartImage = xKind !== undefined && xKind !== "TIME";
   const image = hasChartImage
     ? embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, publisher, key)
@@ -288,17 +291,17 @@ function paragraphs(text: string): string {
 }
 
 /**
- * The crawlable content block injected into #ssr-content: overview, metrics, targets, methodology,
+ * The crawlable content block injected into #ssr-content: overview, metrics, subjects, methodology,
  * and publisher — all as plain HTML. The viewer removes this the moment it has the live data, so
  * there is no duplication for JS visitors and no cloaking (same content either way).
  *
- * `targets` is a sample for the visible list (we fetch only the first page); `targetTotal` is the
+ * `subjects` is a sample for the visible list (we fetch only the first page); `subjectTotal` is the
  * true count (from the API's meta), so the heading is accurate even when we listed only a slice.
  */
 export function benchmarkSsrBody(
   b: BenchmarkResource,
-  targets: TargetResource[],
-  targetTotal?: number,
+  subjects: SubjectResource[],
+  subjectTotal?: number,
 ): string {
   const a = b.attributes;
   const parts: string[] = [];
@@ -306,22 +309,22 @@ export function benchmarkSsrBody(
   const overview = str(a.about) || str(a.description);
   if (overview) parts.push(paragraphs(overview));
 
-  const metrics = metricNames(a.observation_schema);
+  const metrics = metricNames(a.measurement_schema);
   if (metrics.length) {
     parts.push(
       `<h2>Metrics</h2><ul>${metrics.map((m) => `<li>${escapeHtml(m)}</li>`).join("")}</ul>`,
     );
   }
 
-  const names = targets
+  const names = subjects
     .map((t) => str(t.attributes?.name) || str(t.attributes?.key))
     .filter((n) => n.length > 0);
   if (names.length) {
-    const shown = names.slice(0, SSR_TARGET_LIMIT);
-    const total = typeof targetTotal === "number" && targetTotal >= names.length ? targetTotal : names.length;
+    const shown = names.slice(0, SSR_SUBJECT_LIMIT);
+    const total = typeof subjectTotal === "number" && subjectTotal >= names.length ? subjectTotal : names.length;
     const more = total - shown.length;
     parts.push(
-      `<h2>Targets (${total})</h2><ul>${shown.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` +
+      `<h2>Subjects (${total})</h2><ul>${shown.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>` +
         (more > 0 ? `<p>…and ${more} more.</p>` : ""),
     );
   }

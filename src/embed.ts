@@ -17,7 +17,7 @@ export const EMBED_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 // The viewer params that affect the image. Anything else (embed, api, junk) is dropped, so the
 // cache-key space stays bounded and can't be inflated by cache-busting query strings.
-const SCALAR_PARAM_KEYS = ["from", "to", "range", "targets", "metrics", "view", "sort", "q", "page"];
+const SCALAR_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort", "q", "page"];
 
 function isEmbedParamKey(k: string): boolean {
   return SCALAR_PARAM_KEYS.includes(k) || k.startsWith("facet.");

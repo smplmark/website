@@ -65,7 +65,7 @@ returning the shell:
 - **JSON-LD `Dataset` markup** (`schema.org/Dataset`) — name, keywords, publisher, license,
   `variableMeasured`, and a JSON `distribution` URL — which makes the page eligible for
   [Google Dataset Search](https://datasetsearch.research.google.com/);
-- a plain-HTML content block (`#ssr-content`: overview, metrics, a sample of targets with the true
+- a plain-HTML content block (`#ssr-content`: overview, metrics, a sample of subjects with the true
   count, methodology, publisher). The viewer removes this block the instant it has the live data, so
   JS visitors get the interactive version with no duplication and no cloaking.
 
@@ -78,13 +78,17 @@ hit the API on every request while a freshly published benchmark still appears w
 ## Reading data from the app API
 
 The viewer (`public/js/benchmark.js`, `public/js/benchmark-list.js`) fetches published benchmarks,
-targets, runs, and observations from the app's public API. It resolves the API base at runtime
-(`apiBase()`): on `www`/apex it uses `https://app.smplmark.org`; on `localhost` it defaults to the
-local app Worker at `http://localhost:8788`; otherwise it falls back to same-origin. An explicit
-`?api=<url>` query param (or `window.SM_API_BASE`) overrides all of that and stays sticky across
-internal links — e.g. `?api=https://app.smplmark.org` browses the local site against production
-data. Only world-visible (PUBLISHED / WITHDRAWN) data is reachable — these are unauthenticated
-public reads.
+subjects, runs, and observations from the app's public API. It resolves the API base at runtime
+(`apiBase()`), in priority order: an explicit `?api=<url>` query param, then `window.SM_API_BASE`,
+then host defaults — `https://app.smplmark.org` on `www`/apex, `http://localhost:8788` on
+`localhost`, same-origin otherwise.
+
+In the local loop the Worker injects `window.SM_API_BASE` to match its own `DEV_APP_ORIGIN`, so the
+**same env var switches both the SSR fetches and the client viewer** — `npm run dev` reads the local
+app on `:8788`, `npm run dev:remote` reads production, each with no `?api=` needed. A `?api=<url>`
+still overrides per-request and stays sticky across internal links (e.g.
+`?api=https://app.smplmark.org`) when you want a one-off origin. Only world-visible (PUBLISHED /
+WITHDRAWN) data is reachable — these are unauthenticated public reads.
 
 ## Local development
 
@@ -100,13 +104,23 @@ npm run dev                           # wrangler dev — http://localhost:8788
 
 # Terminal 2 — this site on :8787
 npm install
-cp .dev.vars.example .dev.vars        # once: dev-only vars (points app-host redirects at :8788)
-npm run dev                           # wrangler dev — http://localhost:8787 (marketing + viewer)
+cp .dev.vars.example .dev.vars        # once: dev-only vars file (DEV_APP_ORIGIN comes from the scripts)
+npm run dev                           # http://localhost:8787 — reads the local app on :8788
 ```
 
 Open `http://localhost:8787/benchmarks` — the viewer talks to `:8788` automatically. Edits to
 `public/` and `src/` hot-reload; re-run the importer any time to rebuild the local dataset (it
 only ever touches the ingested scope).
+
+**Remote mode** — to run only the site (Terminal 2) against **production** data, skipping the local
+app + D1 setup entirely:
+
+```bash
+npm run dev:remote                    # http://localhost:8787 — reads https://app.smplmark.org
+```
+
+Both SSR and the client viewer read production, so no `?api=` is needed. It's read-only public data,
+so this is safe for iterating on the site's UI against the real catalog.
 
 ## Testing
 

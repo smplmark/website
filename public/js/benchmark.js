@@ -1,10 +1,10 @@
 "use strict";
 
 // Data-driven benchmark page. Everything shown is pulled from the API for the {key} in the URL.
-// The chart renders one of three modes declared in observation_schema.chart:
+// The chart renders one of three modes declared in measurement_schema.chart:
 //   TIME     x = created_at        → time-series (scheduler-latency)
 //   NUMBER   x = a numeric metric  → numeric-x overlay (aligns disjoint runs, e.g. elapsed_ms)
-//   CATEGORY x = null              → one bar per target (a scalar per target)
+//   CATEGORY x = null              → one bar per subject (a scalar per subject)
 // Credibility (§8) is surfaced, never hidden: a WITHDRAWN benchmark keeps a banner; invalidated
 // runs are listed and flagged; live runs show a "still recording" indicator.
 
@@ -52,8 +52,7 @@ function publisherUrl(pa) {
   if (!pa) return null;
   if (pa.kind === "INGESTED") return safeHttpUrl(pa.source_url);
   if (pa.kind === "ORGANIZATION") {
-    const domains = Array.isArray(pa.verified_domains) ? pa.verified_domains : [];
-    return domains.length ? "https://" + domains[0] : null;
+    return pa.domain ? "https://" + String(pa.domain) : null;
   }
   return null; // PERSONAL: no external site
 }
@@ -69,17 +68,22 @@ function attributionMarkup(pa, nameHref) {
       (external ? ' target="_blank" rel="noopener"' : "") + ">" + label + "</a>"
     : '<span class="attribution-name">' + label + "</span>";
   if (pa.kind === "ORGANIZATION") {
-    const logo = safeHttpUrl(pa.logo_url);
-    const logoImg = logo ? '<img class="attribution-logo" src="' + esc(logo) + '" alt="" />' : "";
-    const domains = Array.isArray(pa.verified_domains) ? pa.verified_domains : [];
-    let verified = "";
-    if (domains.length) {
-      const extra = domains.length > 1 ? " +" + (domains.length - 1) : "";
-      verified =
-        '<span class="attribution-verified" title="Verified domain: ' + esc(domains.join(", ")) + '">' +
-        checkIcon() + esc(domains[0]) + extra + "</span>";
-    }
-    return '<span class="attribution"><span class="who">' + logoImg + nameEl + "</span>" + verified + "</span>";
+    // An organization publish IS its verified domain — show the domain, its favicon (or a monogram
+    // fallback), and a verified check. The API sends { kind, domain, icon }.
+    const domain = String(pa.domain || "");
+    if (!domain) return '<span class="attribution"><span class="who">' + nameEl + "</span></span>";
+    const iconEl =
+      '<span class="attribution-icon"><span class="attribution-mono" aria-hidden="true">' +
+      esc(domain.charAt(0).toUpperCase()) + "</span>" +
+      (pa.icon === "favicon" ? '<img class="attribution-favicon" alt="" data-fav-domain="' + esc(domain) + '" />' : "") +
+      "</span>";
+    const domHref = nameHref || "https://" + domain;
+    const domName =
+      '<a href="' + esc(domHref) + '" class="attribution-name" id="byline-link" target="_blank" rel="noopener">' +
+      esc(domain) + "</a>";
+    // Verification is shown by the caller's own pill (verifiedPill / publisher-kind), so the badge
+    // itself is just the icon + domain — no duplicate "verified" chip here.
+    return '<span class="attribution"><span class="who">' + iconEl + domName + "</span></span>";
   }
   if (pa.kind === "INGESTED") {
     // The badge is simply the source's name; license and attribution details live on /about.
@@ -120,6 +124,27 @@ function wireBadgeImages(container) {
   if (!container) return;
   container.querySelectorAll(".attribution-logo, .attribution-avatar").forEach((img) => {
     img.addEventListener("error", () => img.remove());
+  });
+}
+
+// Resolve an organization's favicon: sites keep their icon at different conventional paths (many have
+// no /favicon.ico — they declare an SVG/PNG via <link>, which we can't read cross-origin). Probe the
+// common paths in order; the first that loads as an image wins. If none do, drop the <img> so the
+// monogram underneath shows through.
+var FAVICON_PATHS = ["/favicon.ico", "/favicon.svg", "/apple-touch-icon.png", "/favicon.png"];
+function wirePublisherFavicons(container) {
+  if (!container) return;
+  container.querySelectorAll("img.attribution-favicon[data-fav-domain]").forEach((img) => {
+    const domain = String(img.getAttribute("data-fav-domain") || "").trim();
+    const urls = domain ? FAVICON_PATHS.map((p) => "https://" + domain + p) : [];
+    let i = 0;
+    const tryNext = () => {
+      if (i >= urls.length) { img.remove(); return; } // reveal the monogram
+      img.src = urls[i++];
+    };
+    img.addEventListener("error", tryNext);
+    img.addEventListener("load", () => { if (img.naturalWidth > 0) img.style.opacity = "1"; else tryNext(); });
+    tryNext();
   });
 }
 
@@ -250,9 +275,9 @@ function fmtDate(iso) {
 
 let benchmark = null;
 let publisher = null;
-let targets = [];
-let targetsTruncated = false;
-let runs = []; // benchmark-wide; each carries attributes incl target + live + invalidated
+let subjects = [];
+let subjectsTruncated = false;
+let runs = []; // benchmark-wide; each carries attributes incl subject + live + invalidated
 let runsTruncated = false;
 let metricList = [];
 let chartDecl = null;
@@ -264,7 +289,7 @@ let chartView = "bars"; // CATEGORY visualization: "bars" | "table"
 //   • ALL — no `filters` entry: every value checked/shown (the default).
 //   • { mode:"IN", set } — INCLUDE: only the listed values are checked/shown ("only"/compare-a-few).
 //   • { mode:"EX", set } — EXCLUDE: every value EXCEPT the listed ones is checked/shown (uncheck-to-hide).
-// TARGET_FIELD keys the target selection; detail fields key the derived facets. Select-all / Clear
+// SUBJECT_FIELD keys the subject selection; detail fields key the derived facets. Select-all / Clear
 // return a field (or all fields) to ALL, i.e. all boxes checked.
 let filters = {}; // field → { mode:"IN"|"EX", set:Set<string> }
 let metricSelection = []; // checked metric names, in schema order
@@ -374,25 +399,25 @@ async function init() {
   } catch (_) {
     publisher = null;
   }
-  const schema = a.observation_schema || { metrics: [], derived: [] };
+  const schema = a.measurement_schema || { metrics: [], derived: [] };
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
   chartDecl = schema.chart || inferChart(metricList);
   chartMode = chartDecl ? chartDecl.x_kind || inferKind(chartDecl.x) : "TIME";
 
   // One model for every benchmark, large or small (no server-side ranking endpoint): pull the WHOLE
-  // benchmark into the browser — all targets, all runs, and (lazily, on first draw) all measurements —
+  // benchmark into the browser — all subjects, all runs, and (lazily, on first draw) all measurements —
   // then sort/filter/render entirely client-side. fetchAllPages walks every page with no row ceiling,
   // so the real cost of the "fetch everything" model is felt directly.
   try {
-    const res = await fetchAllPages(API + "/api/v1/targets?filter[benchmark]=" + encodeURIComponent(benchmark.id));
-    targets = res.data;
-    targetsTruncated = res.truncated;
+    const res = await fetchAllPages(API + "/api/v1/subjects?filter[benchmark]=" + encodeURIComponent(benchmark.id));
+    subjects = res.data;
+    subjectsTruncated = res.truncated;
   } catch (_) {
-    targets = [];
+    subjects = [];
   }
-  // Runs: one benchmark-wide request (not one per target), for live + invalidation surfacing. A run
-  // is a benchmark child (it spans targets); the chart groups by each measurement's own target, so no
-  // run→target map is needed. Best-effort.
+  // Runs: one benchmark-wide request (not one per subject), for live + invalidation surfacing. A run
+  // is a benchmark child (it spans subjects); the chart groups by each measurement's own subject, so no
+  // run→subject map is needed. Best-effort.
   runs = [];
   try {
     const res = await fetchAllPages(API + "/api/v1/runs?filter[benchmark]=" + encodeURIComponent(benchmark.id));
@@ -424,7 +449,7 @@ async function init() {
   renderMethodology();
   renderPublisher();
   // Before setupTabs: an initial #data hash (or a deep link) draws the chart immediately, and
-  // that first draw must already see the URL-seeded range/targets/metrics/view/sort.
+  // that first draw must already see the URL-seeded range/subjects/metrics/view/sort.
   readViewParams();
   // Build the data-panel controls BEFORE setupTabs, because landing on the Data tab (now the default)
   // draws the chart immediately, which needs the controls already in place.
@@ -469,6 +494,7 @@ function renderHead() {
   if (pa) {
     el("bm-byline").innerHTML = attributionMarkup(pa, publisherUrl(pa)) + verifiedPill(pa);
     wireBadgeImages(el("bm-byline"));
+    wirePublisherFavicons(el("bm-byline"));
   } else {
     el("bm-byline").textContent = "";
   }
@@ -509,11 +535,11 @@ function renderBanners() {
   if (live.length) {
     html += '<div class="banner live"><span class="dot"></span>' + live.length + " live run" + (live.length > 1 ? "s" : "") + " — still recording.</div>";
   }
-  if (targetsTruncated || runsTruncated) {
+  if (subjectsTruncated || runsTruncated) {
     html +=
       '<div class="banner"><strong>Large benchmark:</strong> showing the first ' +
-      (targetsTruncated ? targets.length + " targets" : runs.length + " runs") +
-      ". Narrow the view with the target picker on the Data tab.</div>";
+      (subjectsTruncated ? subjects.length + " subjects" : runs.length + " runs") +
+      ". Narrow the view with the subject picker on the Data tab.</div>";
   }
   box.innerHTML = html;
 }
@@ -608,6 +634,7 @@ function renderPublisher() {
   }
   box.innerHTML = html;
   wireBadgeImages(box);
+  wirePublisherFavicons(box);
 }
 
 // ── Stats tab — the benchmark's shape and provenance dates at a glance. Counts come from cheap
@@ -633,7 +660,7 @@ function statsRow(label, valueHtml) {
 }
 
 // A per-parent average, rendered as a whole number when it divides evenly (the common "exactly one
-// run per target" case) and one decimal otherwise — a quick read on uniformity.
+// run per subject" case) and one decimal otherwise — a quick read on uniformity.
 function perParent(total, parents) {
   if (typeof total !== "number" || typeof parents !== "number" || parents <= 0) return "—";
   const avg = total / parents;
@@ -646,8 +673,8 @@ async function renderStats() {
   const a = benchmark.attributes;
   box.innerHTML = '<p class="muted">Loading…</p>';
 
-  const [nTargets, nRuns, nMeas] = await Promise.all([
-    fetchTotal("targets"),
+  const [nSubjects, nRuns, nMeas] = await Promise.all([
+    fetchTotal("subjects"),
     fetchTotal("runs"),
     fetchTotal("measurements"),
   ]);
@@ -664,10 +691,10 @@ async function renderStats() {
     statsRow("Created", dateOrDash(a.created_at)) +
     statsRow("Last updated", dateOrDash(a.updated_at)) +
     statsRow("Status", status) +
-    statsRow("Targets", num(nTargets)) +
+    statsRow("Subjects", num(nSubjects)) +
     statsRow("Runs", num(nRuns)) +
     statsRow("Measurements", num(nMeas)) +
-    statsRow("Measurements per target", perParent(nMeas, nTargets)) +
+    statsRow("Measurements per subject", perParent(nMeas, nSubjects)) +
     statsRow("Measurements per run", perParent(nMeas, nRuns)) +
     "</tbody></table>";
 }
@@ -768,11 +795,11 @@ function setupTabs() {
   });
 }
 
-// ── Deep links — the query string carries the data view (from/to/range/targets/metrics/view/
+// ── Deep links — the query string carries the data view (from/to/range/subjects/metrics/view/
 // sort); the hash keeps sole ownership of the tab. Every param is optional and validated
 // against loaded data: a bad value is dropped, never allowed to break rendering. ?api= and any
 // unrecognized params pass through every rewrite untouched. ──
-const VIEW_PARAM_KEYS = ["from", "to", "range", "targets", "metrics", "view", "sort"];
+const VIEW_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort"];
 const DAY_MS = 86400000;
 
 function searchParams() {
@@ -843,7 +870,7 @@ function syncRangeSelect() {
   select.value = "custom";
 }
 
-// Seed the view state from the URL. Runs once, after targets/metricList load (keys and names
+// Seed the view state from the URL. Runs once, after subjects/metricList load (keys and names
 // validate against real data) and before anything can draw.
 function readViewParams() {
   const params = searchParams();
@@ -863,24 +890,24 @@ function readViewParams() {
     syncRangeSelect();
   }
 
-  // targets: comma-separated target KEYS → ids. Unknown keys drop silently; all dropped (or the
-  // list naming every target) means the same as omitted — all targets. A present-but-empty
-  // "targets=" round-trips a none-selected view. (Comma is the delimiter, so a key that itself
+  // subjects: comma-separated subject KEYS → ids. Unknown keys drop silently; all dropped (or the
+  // list naming every subject) means the same as omitted — all subjects. A present-but-empty
+  // "subjects=" round-trips a none-selected view. (Comma is the delimiter, so a key that itself
   // contains a comma can't round-trip — keys are meant to be URL-safe identifiers.)
-  const targetsParam = params.get("targets");
-  if (targetsParam !== null) {
-    const idByKey = new Map(targets.map((t) => [t.attributes.key, t.id]));
-    let raw = targetsParam, mode = "IN";
+  const subjectsParam = params.get("subjects");
+  if (subjectsParam !== null) {
+    const idByKey = new Map(subjects.map((t) => [t.attributes.key, t.id]));
+    let raw = subjectsParam, mode = "IN";
     if (raw.charAt(0) === "~") { mode = "EX"; raw = raw.slice(1); } // "~keys" ⇒ hide these, show the rest
     const fragments = raw.split(",").map((s) => s.trim()).filter(Boolean);
     const set = new Set();
     for (const k of fragments) { const id = idByKey.get(k); if (id) set.add(id); }
     if (mode === "EX") {
-      if (set.size) filters[TARGET_FIELD] = { mode: "EX", set };
+      if (set.size) filters[SUBJECT_FIELD] = { mode: "EX", set };
     } else if (fragments.length === 0) {
-      filters[TARGET_FIELD] = { mode: "IN", set: new Set() }; // explicit none-shown
-    } else if (set.size && set.size < targets.length) {
-      filters[TARGET_FIELD] = { mode: "IN", set };
+      filters[SUBJECT_FIELD] = { mode: "IN", set: new Set() }; // explicit none-shown
+    } else if (set.size && set.size < subjects.length) {
+      filters[SUBJECT_FIELD] = { mode: "IN", set };
     }
   }
 
@@ -935,11 +962,11 @@ function syncViewParams() {
     }
   }
 
-  const tf = filters[TARGET_FIELD];
+  const tf = filters[SUBJECT_FIELD];
   if (tf) {
-    // IN → the shown keys; EX → "~" + the hidden keys. Absence means all targets (ALL, all checked).
-    const keys = targets.filter((t) => tf.set.has(t.id)).map((t) => t.attributes.key);
-    params.set("targets", (tf.mode === "EX" ? "~" : "") + keys.join(","));
+    // IN → the shown keys; EX → "~" + the hidden keys. Absence means all subjects (ALL, all checked).
+    const keys = subjects.filter((t) => tf.set.has(t.id)).map((t) => t.attributes.key);
+    params.set("subjects", (tf.mode === "EX" ? "~" : "") + keys.join(","));
   }
 
   if (barsSingle()) {
@@ -959,7 +986,7 @@ function syncViewParams() {
   // Drawer filters → URL (so "Copy link"/"Copy image link" reproduce the filtered view; the embed
   // image cache already keys on facet.*/q, so each distinct filter yields its own cached image).
   for (const field of Object.keys(filters)) {
-    if (field === TARGET_FIELD) continue;
+    if (field === SUBJECT_FIELD) continue;
     const f = filters[field];
     const vals = [...f.set];
     if (vals.length) params.set("facet." + field, (f.mode === "EX" ? "~" : "") + vals.join(","));
@@ -1006,22 +1033,22 @@ function measurementsUrl(scopeParam, scopeId, range) {
   return url;
 }
 
-// One benchmark-wide measurements fetch per range (cached), grouped by each measurement's own target
-// (a measurement names its target directly) — instead of one request per target.
-const observationCache = new Map(); // range key → { byTarget: Map<targetId, measurement[]>, truncated }
-async function observationsByTarget(range) {
+// One benchmark-wide measurements fetch per range (cached), grouped by each measurement's own subject
+// (a measurement names its subject directly) — instead of one request per subject.
+const observationCache = new Map(); // range key → { bySubject: Map<subjectId, measurement[]>, truncated }
+async function observationsBySubject(range) {
   const cacheKey = range || "all";
   if (observationCache.has(cacheKey)) return observationCache.get(cacheKey);
   const res = await fetchAllPages(measurementsUrl("benchmark", benchmark.id, range));
-  const byTarget = new Map();
+  const bySubject = new Map();
   for (const s of res.data) {
-    const targetId = s.attributes.target;
-    if (targetId === undefined) continue;
-    let list = byTarget.get(targetId);
-    if (!list) { list = []; byTarget.set(targetId, list); }
+    const subjectId = s.attributes.subject;
+    if (subjectId === undefined) continue;
+    let list = bySubject.get(subjectId);
+    if (!list) { list = []; bySubject.set(subjectId, list); }
     list.push(s);
   }
-  const entry = { byTarget: byTarget, truncated: res.truncated };
+  const entry = { bySubject: bySubject, truncated: res.truncated };
   observationCache.set(cacheKey, entry);
   return entry;
 }
@@ -1046,7 +1073,7 @@ function metricUnit(name) {
   return m && m.unit ? m.unit : "";
 }
 
-// Build [{x,y}] points for a target's observations for the active mode.
+// Build [{x,y}] points for a subject's observations for the active mode.
 function pointsFor(list, yKey, xKey) {
   const pts = [];
   for (const s of list) {
@@ -1063,15 +1090,15 @@ function pointsFor(list, yKey, xKey) {
   return pts;
 }
 
-function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
+function renderXY(seriesSubjects, perSubjectPoints, yKey, timeX) {
   const xset = new Set();
-  perTargetPoints.forEach((pts) => pts.forEach((p) => xset.add(p.x)));
+  perSubjectPoints.forEach((pts) => pts.forEach((p) => xset.add(p.x)));
   const xs = [...xset].sort((a, b) => a - b);
   if (!xs.length) { destroyChart(); el("empty").hidden = false; return; }
   el("empty").hidden = true;
   const idx = new Map(xs.map((x, i) => [x, i]));
   const data = [xs];
-  perTargetPoints.forEach((pts) => {
+  perSubjectPoints.forEach((pts) => {
     const y = new Array(xs.length).fill(null);
     pts.forEach((p) => { y[idx.get(p.x)] = p.y; });
     data.push(y);
@@ -1084,7 +1111,7 @@ function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
     scales: { x: { time: !!timeX } },
     series: [
       timeX ? {} : { label: xLabel || "x" },
-      ...seriesTargets.map((t, i) => ({
+      ...seriesSubjects.map((t, i) => ({
         label: t.attributes.name,
         stroke: COLORS[i % COLORS.length],
         width: 1.5,
@@ -1094,7 +1121,18 @@ function renderXY(seriesTargets, perTargetPoints, yKey, timeX) {
     ],
     axes: [
       timeX ? Object.assign({ values: utcTicks }, AXIS) : Object.assign({ label: xLabel, labelSize: 30 }, AXIS),
-      Object.assign({ label: yKey + (unit ? " (" + unit + ")" : ""), labelSize: 34 }, AXIS),
+      // Size the value gutter to the widest tick label so large (6–7 digit) values don't overrun
+      // the rotated axis label. uPlot's default measure sticks to the first draw's magnitudes; this
+      // re-derives it from the current ticks (~7px/char + gap/tick padding).
+      Object.assign(
+        {
+          label: yKey + (unit ? " (" + unit + ")" : ""),
+          labelSize: 34,
+          size: (_u, vals) =>
+            (vals || []).reduce((m, v) => Math.max(m, String(v == null ? "" : v).length), 3) * 7 + 18,
+        },
+        AXIS,
+      ),
     ],
   };
   if (timeX) {
@@ -1177,7 +1215,7 @@ function renderIncremental(listEl, items, renderRow) {
   fill(); // first chunks to fill the initial screen
 }
 
-// ── Category bars: one ranked bar per target for the chosen metric. A header over the value column
+// ── Category bars: one ranked bar per subject for the chosen metric. A header over the value column
 // names the plotted metric (a picker when there's more than one) and toggles the sort direction, so
 // it's always clear WHAT the bars show. ──
 let barsDesc = true;
@@ -1187,14 +1225,14 @@ function titleCase(s) {
   return String(s == null ? "" : s).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function renderBars(seriesTargets, perTargetPoints, yKey) {
+function renderBars(seriesSubjects, perSubjectPoints, yKey) {
   destroyChart();
-  const rows = seriesTargets.map((t, i) => {
-    const pts = perTargetPoints[i];
+  const rows = seriesSubjects.map((t, i) => {
+    const pts = perSubjectPoints[i];
     const mean = pts.length ? pts.reduce((s, p) => s + p.y, 0) / pts.length : null;
     return { name: t.attributes.name, value: mean };
   });
-  // Rank by value in the chosen direction, but keep null-valued targets last either way (a missing
+  // Rank by value in the chosen direction, but keep null-valued subjects last either way (a missing
   // measurement shouldn't jump to the top of an ascending sort).
   rows.sort((a, z) => {
     if (a.value == null && z.value == null) return 0;
@@ -1207,10 +1245,10 @@ function renderBars(seriesTargets, perTargetPoints, yKey) {
   // Above the bars: the plotted metric, title-cased in a large font (chosen in the filter bar), plus
   // how many bars match the current filter out of the benchmark's total.
   const unitSuffix = metricUnit(yKey) ? ' <span class="bars-metric-unit">(' + esc(metricUnit(yKey)) + ")</span>" : "";
-  const count = seriesTargets.length, total = targets.length;
+  const count = seriesSubjects.length, total = subjects.length;
   const countText = count === total
-    ? count.toLocaleString() + (count === 1 ? " target" : " targets")
-    : count.toLocaleString() + " of " + total.toLocaleString() + " targets";
+    ? count.toLocaleString() + (count === 1 ? " subject" : " subjects")
+    : count.toLocaleString() + " of " + total.toLocaleString() + " subjects";
   const title =
     '<div class="bars-title">' +
     '<h3 class="bars-metric-title">' + esc(titleCase(yKey)) + unitSuffix + "</h3>" +
@@ -1246,11 +1284,11 @@ function fmtCell(v) {
   return parseFloat(v.toPrecision(4)).toString();
 }
 
-function renderTable(seriesTargets, byTarget) {
+function renderTable(seriesSubjects, bySubject) {
   destroyChart();
   const metricNames = metricSelection.length ? metricSelection : metricList.map((m) => m.name);
-  const rows = seriesTargets.map((t) => {
-    const obs = byTarget.get(t.id) || [];
+  const rows = seriesSubjects.map((t) => {
+    const obs = bySubject.get(t.id) || [];
     const cells = {};
     for (const name of metricNames) {
       let sum = 0, n = 0;
@@ -1270,7 +1308,7 @@ function renderTable(seriesTargets, byTarget) {
   });
   el("empty").hidden = true;
   el("chart").innerHTML =
-    '<div class="table-wrap"><table class="data-table"><thead><tr><th>Target</th>' +
+    '<div class="table-wrap"><table class="data-table"><thead><tr><th>Subject</th>' +
     metricNames
       .map(
         (name) =>
@@ -1290,7 +1328,7 @@ function renderTable(seriesTargets, byTarget) {
       const metric = th.dataset.metric;
       tableSort = { key: metric, desc: tableSort.key === metric ? !tableSort.desc : true };
       syncViewParams(); // re-render below skips drawChart, so the URL syncs here
-      renderTable(seriesTargets, byTarget);
+      renderTable(seriesSubjects, bySubject);
     });
   });
 }
@@ -1308,30 +1346,30 @@ async function drawChart() {
     el("chart-status").textContent = "This benchmark has no numeric metric to plot.";
     return;
   }
-  let seriesTargets = activeTargets();
-  if (!seriesTargets.length) {
+  let seriesSubjects = activeSubjects();
+  if (!seriesSubjects.length) {
     destroyChart();
     el("chart").innerHTML = "";
-    el("chart-status").textContent = "No targets selected.";
+    el("chart-status").textContent = "No subjects selected.";
     return;
   }
   el("chart-status").className = "status";
   el("chart-status").textContent = "Loading…";
   try {
-    const { byTarget, truncated } = await observationsByTarget(range);
+    const { bySubject, truncated } = await observationsBySubject(range);
     let seriesNote = "";
-    if (chartMode !== "CATEGORY" && seriesTargets.length > MAX_SERIES) {
-      seriesTargets = seriesTargets.slice(0, MAX_SERIES);
-      seriesNote = " · first " + MAX_SERIES + " selected targets plotted — narrow the target list to focus";
+    if (chartMode !== "CATEGORY" && seriesSubjects.length > MAX_SERIES) {
+      seriesSubjects = seriesSubjects.slice(0, MAX_SERIES);
+      seriesNote = " · first " + MAX_SERIES + " selected subjects plotted — narrow the subject list to focus";
     }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
-    const perTargetPoints = seriesTargets.map((t) => pointsFor(byTarget.get(t.id) || [], yKey, xKey));
-    if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesTargets, byTarget);
-    else if (chartMode === "CATEGORY") renderBars(seriesTargets, perTargetPoints, yKey);
-    else renderXY(seriesTargets, perTargetPoints, yKey, chartMode === "TIME");
-    const total = perTargetPoints.reduce((n, pts) => n + pts.length, 0);
+    const perSubjectPoints = seriesSubjects.map((t) => pointsFor(bySubject.get(t.id) || [], yKey, xKey));
+    if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesSubjects, bySubject);
+    else if (chartMode === "CATEGORY") renderBars(seriesSubjects, perSubjectPoints, yKey);
+    else renderXY(seriesSubjects, perSubjectPoints, yKey, chartMode === "TIME");
+    const total = perSubjectPoints.reduce((n, pts) => n + pts.length, 0);
     el("chart-status").textContent =
-      total + " measurements · " + seriesTargets.length + " target(s) · metric “" + yKey + "” · " +
+      total + " measurements · " + seriesSubjects.length + " subject(s) · metric “" + yKey + "” · " +
       chartMode.toLowerCase() + " chart" +
       (truncated ? " · large dataset — first " + MAX_PAGES * PAGE_SIZE + " measurements loaded" : "") +
       seriesNote + ".";
@@ -1343,9 +1381,9 @@ async function drawChart() {
 }
 
 function currentScopeUrl(range) {
-  const active = activeTargets();
+  const active = activeSubjects();
   return active.length === 1
-    ? measurementsUrl("target", active[0].id, range)
+    ? measurementsUrl("subject", active[0].id, range)
     : measurementsUrl("benchmark", benchmark.id, range);
 }
 
@@ -1654,14 +1692,14 @@ function openTakedownModal() {
   });
 }
 
-// ── Client-derived facets: aggregate every target's open-ended `details` map. A field with ≥2
-// distinct values becomes a facet; values rank by count. No server, no caps — every target is
+// ── Client-derived facets: aggregate every subject's open-ended `details` map. A field with ≥2
+// distinct values becomes a facet; values rank by count. No server, no caps — every subject is
 // already in memory — facets are derived client-side, not served. ──
 let facetList = [];    // [{ field, values: [{value, count}] }]
 
 function deriveFacets() {
   const byField = new Map();
-  for (const t of targets) {
+  for (const t of subjects) {
     const d = t.attributes.details;
     if (!d || typeof d !== "object") continue;
     for (const k of Object.keys(d)) {
@@ -1689,8 +1727,8 @@ function facetLabel(field) {
   return field.charAt(0).toUpperCase() + field.slice(1).replace(/_/g, " ");
 }
 
-// A target is plotted when it clears every active facet (OR within a field, AND across fields) AND
-// the explicit TARGET selection. `targetsExcept` gives the set passing every filter but one — the
+// A subject is plotted when it clears every active facet (OR within a field, AND across fields) AND
+// the explicit SUBJECT selection. `subjectsExcept` gives the set passing every filter but one — the
 // basis for faceted counts (a facet's own selection is ignored when counting its own values).
 // A value is checked (and shown) unless a filter says otherwise. IN → only the set is checked;
 // EX → everything but the set is checked; ALL (no entry) → everything is checked.
@@ -1724,23 +1762,23 @@ function clearField(field) { delete filters[field]; }
 function passesFacets(t) {
   const d = t.attributes.details || {};
   for (const field of Object.keys(filters)) {
-    if (field === TARGET_FIELD) continue;
+    if (field === SUBJECT_FIELD) continue;
     if (!valueChecked(field, String(d[field]))) return false;
   }
   return true;
 }
-function passesTargetSel(t) { return valueChecked(TARGET_FIELD, t.id); }
-function activeTargets() {
-  return targets.filter((t) => passesFacets(t) && passesTargetSel(t));
+function passesSubjectSel(t) { return valueChecked(SUBJECT_FIELD, t.id); }
+function activeSubjects() {
+  return subjects.filter((t) => passesFacets(t) && passesSubjectSel(t));
 }
-function targetsExcept(exceptField) {
-  return targets.filter((t) => {
+function subjectsExcept(exceptField) {
+  return subjects.filter((t) => {
     const d = t.attributes.details || {};
     for (const field of Object.keys(filters)) {
-      if (field === exceptField || field === TARGET_FIELD) continue;
+      if (field === exceptField || field === SUBJECT_FIELD) continue;
       if (!valueChecked(field, String(d[field]))) return false;
     }
-    return exceptField === TARGET_FIELD || valueChecked(TARGET_FIELD, t.id);
+    return exceptField === SUBJECT_FIELD || valueChecked(SUBJECT_FIELD, t.id);
   });
 }
 function totalActiveFilters() { return Object.keys(filters).length; }
@@ -1765,44 +1803,44 @@ function defaultBarsMetric() {
   return names.length ? names[0] : null;
 }
 
-// ── The collapsible left filter panel. TARGET is the first "facet", then every derived facet. Each
+// ── The collapsible left filter panel. SUBJECT is the first "facet", then every derived facet. Each
 // section expands/collapses, lists its first 20 values alphabetically with Select all / only
 // quick-picks and a "+N more" reveal, and — only when it has >20 values — a search box. Counts are
 // live and faceted (a value's count reflects the other active filters). ──
-const TARGET_FIELD = "__target__";
+const SUBJECT_FIELD = "__subject__";
 const SECTION_VALUE_LIMIT = 10; // first N values shown per facet (no inner scroll) before "+N more"
-const SECTION_SHOWALL_MAX = 400; // cap rows even when "+N more" is expanded (TARGET has 11.8k values)
+const SECTION_SHOWALL_MAX = 400; // cap rows even when "+N more" is expanded (SUBJECT has 11.8k values)
 let panelCollapsed = false;
 let sectionState = {}; // field → { collapsed, search, showAll }
-let targetsByName = null;
+let subjectsByName = null;
 
 function sectionSt(field) {
   if (!sectionState[field]) sectionState[field] = { collapsed: false, search: "", showAll: false };
   return sectionState[field];
 }
-function ensureTargetsByName() {
-  if (!targetsByName) {
-    targetsByName = [...targets].sort((a, z) =>
+function ensureSubjectsByName() {
+  if (!subjectsByName) {
+    subjectsByName = [...subjects].sort((a, z) =>
       a.attributes.name.localeCompare(z.attributes.name, undefined, { numeric: true, sensitivity: "base" }));
   }
-  return targetsByName;
+  return subjectsByName;
 }
 function panelSections() {
-  // Target always first (it isn't really a facet); the real facets follow in alphabetical order.
+  // Subject always first (it isn't really a facet); the real facets follow in alphabetical order.
   const facets = facetList
-    .map((f) => ({ field: f.field, label: facetLabel(f.field), isTarget: false }))
+    .map((f) => ({ field: f.field, label: facetLabel(f.field), isSubject: false }))
     .sort((a, z) => a.label.localeCompare(z.label, undefined, { sensitivity: "base" }));
-  return [{ field: TARGET_FIELD, label: "Target", isTarget: true }, ...facets];
+  return [{ field: SUBJECT_FIELD, label: "Subject", isSubject: true }, ...facets];
 }
 
-// A section's ordered candidate POOL. TARGET returns raw target rows (pre-sorted once, then filtered)
-// — no per-row object is built until the visible ≤20 slice is rendered, so an 11.8k-target benchmark
+// A section's ordered candidate POOL. SUBJECT returns raw subject rows (pre-sorted once, then filtered)
+// — no per-row object is built until the visible ≤20 slice is rendered, so an 11.8k-subject benchmark
 // doesn't churn 11.8k allocations on every panel rebuild. Facets return the small {value,label,count}
 // list, counted over the OTHER active filters (so counts stay meaningful).
 function sectionPool(section) {
-  if (section.isTarget) return ensureTargetsByName().filter((t) => passesFacets(t));
+  if (section.isSubject) return ensureSubjectsByName().filter((t) => passesFacets(t));
   const counts = new Map();
-  for (const t of targetsExcept(section.field)) {
+  for (const t of subjectsExcept(section.field)) {
     const v = (t.attributes.details || {})[section.field];
     if (v == null) continue;
     const val = String(v);
@@ -1812,12 +1850,12 @@ function sectionPool(section) {
     .map(([value, count]) => ({ value, label: value, count }))
     .sort((a, z) => a.label.localeCompare(z.label, undefined, { numeric: true, sensitivity: "base" }));
 }
-// Read a pool item uniformly, whether it's a raw target row (TARGET) or a facet-value object.
-function itemValue(section, it) { return section.isTarget ? it.id : it.value; }
-function itemLabel(section, it) { return section.isTarget ? it.attributes.name : it.label; }
-function itemCount(section, it) { return section.isTarget ? null : it.count; }
+// Read a pool item uniformly, whether it's a raw subject row (SUBJECT) or a facet-value object.
+function itemValue(section, it) { return section.isSubject ? it.id : it.value; }
+function itemLabel(section, it) { return section.isSubject ? it.attributes.name : it.label; }
+function itemCount(section, it) { return section.isSubject ? null : it.count; }
 
-// Section wrappers key the field-level model by section.field (TARGET_FIELD or a detail field).
+// Section wrappers key the field-level model by section.field (SUBJECT_FIELD or a detail field).
 function toggleSectionValue(section, value, on) { setValueChecked(section.field, value, on); }
 function onlySectionValue(section, value) { onlyValue(section.field, value); }
 function clearSectionFilter(section) { clearField(section.field); }
@@ -1828,9 +1866,9 @@ function renderFilterPanel() {
   applyPanelCollapse();
   // Content is always built (even while collapsed) so the slide animation has something to move; CSS
   // (.panel-collapsed on the layout) hides/animates it. Nothing here scrolls — the whole page does.
-  const active = activeTargets();
+  const active = activeSubjects();
   // No collapse chevron — the filter icon in the toolbar opens/closes the panel. The match count
-  // moves into the Target section header (see buildSection). A "Clear all" appears only when active.
+  // moves into the Subject section header (see buildSection). A "Clear all" appears only when active.
   // A persistent header ("Filters" left, "Clear all" right when active) so the panel never shifts
   // when Clear all appears/disappears.
   const head =
@@ -1870,12 +1908,12 @@ function buildSection(section, activeCount) {
   const st = sectionSt(section.field);
   const wrap = document.createElement("div");
   wrap.className = "facet-section" + (st.collapsed ? " collapsed" : "");
-  // The Target section carries the "matching of total" count on the right (it replaces the old
+  // The Subject section carries the "matching of total" count on the right (it replaces the old
   // panel-wide count line); other facets show a badge with how many values the filter touches, but
   // only while the facet is active (not all-checked).
-  const f = section.isTarget ? null : filters[section.field];
-  const right = section.isTarget
-    ? '<span class="facet-header-count">' + Number(activeCount || 0).toLocaleString() + " of " + targets.length.toLocaleString() + "</span>"
+  const f = section.isSubject ? null : filters[section.field];
+  const right = section.isSubject
+    ? '<span class="facet-header-count">' + Number(activeCount || 0).toLocaleString() + " of " + subjects.length.toLocaleString() + "</span>"
     : (f ? '<span class="facet-badge">' + f.set.size + "</span>" : "");
   wrap.innerHTML =
     '<button type="button" class="facet-header">' +

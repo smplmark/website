@@ -15,7 +15,7 @@ import {
   sitemapXml,
   str,
   type BenchmarkResource,
-  type TargetResource,
+  type SubjectResource,
 } from "../src/seo";
 
 const API = "https://app.smplmark.org";
@@ -35,7 +35,7 @@ function bench(over: Partial<BenchmarkResource["attributes"]> = {}, id = "b1"): 
       status: "PUBLISHED",
       published_at: "2026-07-04T15:51:02.616Z",
       updated_at: "2026-07-04T16:00:00.000Z",
-      observation_schema: { metrics: [{ name: "median_score" }], derived: [{ name: "count" }] },
+      measurement_schema: { metrics: [{ name: "median_score" }], derived: [{ name: "count" }] },
       published_as: {
         kind: "INGESTED",
         source_name: "Blender Open Data",
@@ -150,6 +150,16 @@ describe("datasetJsonLd", () => {
     expect(ld.isBasedOn).toBeUndefined();
   });
 
+  it("uses the verified domain as the creator name for an organization publish", () => {
+    const ld = datasetJsonLd(
+      bench({ published_as: { kind: "ORGANIZATION", domain: "smplkit.com", icon: "favicon" } }),
+      { apiOrigin: API },
+    );
+    expect(ld.creator).toEqual({ "@type": "Organization", name: "smplkit.com" });
+    expect(ld.license).toBeUndefined();
+    expect(ld.isBasedOn).toBeUndefined();
+  });
+
   it("omits optional fields when data is absent", () => {
     const ld = datasetJsonLd(
       bench({
@@ -157,7 +167,7 @@ describe("datasetJsonLd", () => {
         category: "OTHER",
         published_at: "",
         updated_at: "",
-        observation_schema: { metrics: [], derived: [] },
+        measurement_schema: { metrics: [], derived: [] },
         published_as: undefined,
       }),
       { apiOrigin: API },
@@ -201,8 +211,8 @@ describe("datasetJsonLd", () => {
     expect(ld.keywords).toEqual(["Hardware"]); // no tags, just the category label
   });
 
-  it("handles a benchmark with no observation_schema at all", () => {
-    const ld = datasetJsonLd(bench({ observation_schema: undefined }), { apiOrigin: API });
+  it("handles a benchmark with no measurement_schema at all", () => {
+    const ld = datasetJsonLd(bench({ measurement_schema: undefined }), { apiOrigin: API });
     expect(ld.variableMeasured).toBeUndefined();
   });
 });
@@ -242,7 +252,7 @@ describe("benchmarkHeadExtras", () => {
 
   it("uses the benchmark's chart image as og:image for non-TIME charts", () => {
     const cat = benchmarkHeadExtras(
-      bench({ observation_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "CATEGORY" } } }),
+      bench({ measurement_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "CATEGORY" } } }),
       { apiOrigin: API },
     );
     expect(cat).toContain('<meta property="og:image" content="https://www.smplmark.org/embed/blender/blender-cpu.png"');
@@ -251,7 +261,7 @@ describe("benchmarkHeadExtras", () => {
 
   it("keeps the logo (summary card) for TIME charts, which lack a bounded default window", () => {
     const time = benchmarkHeadExtras(
-      bench({ observation_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "TIME" } } }),
+      bench({ measurement_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "TIME" } } }),
       { apiOrigin: API },
     );
     expect(time).toContain('<meta property="og:image" content="https://www.smplmark.org/img/logo-dark.png"');
@@ -261,52 +271,52 @@ describe("benchmarkHeadExtras", () => {
 });
 
 describe("benchmarkSsrBody", () => {
-  const targets: TargetResource[] = [
+  const subjects: SubjectResource[] = [
     { id: "t1", attributes: { key: "amd", name: "AMD Ryzen" } },
     { id: "t2", attributes: { key: "intel", name: "Intel i9" } },
   ];
 
-  it("renders overview, metrics, targets, methodology, and publisher", () => {
-    const body = benchmarkSsrBody(bench(), targets);
+  it("renders overview, metrics, subjects, methodology, and publisher", () => {
+    const body = benchmarkSsrBody(bench(), subjects);
     expect(body).toContain("<p>Median render scores.</p>");
     expect(body).toContain("<p>Higher is better.</p>");
     expect(body).toContain("<h2>Metrics</h2>");
     expect(body).toContain("<li>median_score</li>");
-    expect(body).toContain("<h2>Targets (2)</h2>");
+    expect(body).toContain("<h2>Subjects (2)</h2>");
     expect(body).toContain("<li>AMD Ryzen</li>");
     expect(body).toContain("<h2>Methodology</h2>");
     expect(body).toContain("Published by Blender Open Data.");
   });
 
-  it("caps the target list and notes the remainder", () => {
-    const many: TargetResource[] = Array.from({ length: 60 }, (_, i) => ({
+  it("caps the subject list and notes the remainder", () => {
+    const many: SubjectResource[] = Array.from({ length: 60 }, (_, i) => ({
       id: `t${i}`,
       attributes: { key: `k${i}`, name: `Device ${i}` },
     }));
     const body = benchmarkSsrBody(bench(), many);
-    expect(body).toContain("<h2>Targets (60)</h2>");
+    expect(body).toContain("<h2>Subjects (60)</h2>");
     expect(body).toContain("…and 10 more.");
     expect((body.match(/<li>Device/g) || []).length).toBe(50);
   });
 
   it("uses the true total for the heading when only a sample was fetched", () => {
-    const sample: TargetResource[] = Array.from({ length: 50 }, (_, i) => ({
+    const sample: SubjectResource[] = Array.from({ length: 50 }, (_, i) => ({
       id: `t${i}`,
       attributes: { key: `k${i}`, name: `Device ${i}` },
     }));
     const body = benchmarkSsrBody(bench(), sample, 2319);
-    expect(body).toContain("<h2>Targets (2319)</h2>");
+    expect(body).toContain("<h2>Subjects (2319)</h2>");
     expect(body).toContain("…and 2269 more.");
     expect((body.match(/<li>Device/g) || []).length).toBe(50);
   });
 
   it("ignores a bogus total smaller than the sample", () => {
-    const sample: TargetResource[] = [
+    const sample: SubjectResource[] = [
       { id: "a", attributes: { name: "A" } },
       { id: "b", attributes: { name: "B" } },
     ];
     const body = benchmarkSsrBody(bench(), sample, 1);
-    expect(body).toContain("<h2>Targets (2)</h2>");
+    expect(body).toContain("<h2>Subjects (2)</h2>");
   });
 
   it("escapes HTML in all injected text", () => {
@@ -318,24 +328,24 @@ describe("benchmarkSsrBody", () => {
     expect(body).not.toContain("<script>x</script>");
   });
 
-  it("omits sections with no data (unpublished, metric-less, target-less)", () => {
+  it("omits sections with no data (unpublished, metric-less, subject-less)", () => {
     const body = benchmarkSsrBody(
       bench({
         about: "",
         description: "",
         methodology: "",
-        observation_schema: { metrics: [], derived: [] },
+        measurement_schema: { metrics: [], derived: [] },
         published_as: undefined,
       }),
       [],
     );
     expect(body).not.toContain("<h2>Metrics</h2>");
-    expect(body).not.toContain("<h2>Targets");
+    expect(body).not.toContain("<h2>Subjects");
     expect(body).not.toContain("<h2>Methodology</h2>");
     expect(body).not.toContain("Published by");
   });
 
-  it("uses the target key when the name is missing", () => {
+  it("uses the subject key when the name is missing", () => {
     const body = benchmarkSsrBody(bench(), [{ id: "t", attributes: { key: "fallback-key" } }]);
     expect(body).toContain("<li>fallback-key</li>");
   });

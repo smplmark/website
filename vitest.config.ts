@@ -23,7 +23,7 @@ const BENCH_BLENDER = {
     status: "PUBLISHED",
     published_at: "2026-07-04T15:51:02.616Z",
     updated_at: "2026-07-04T16:00:00.000Z",
-    observation_schema: {
+    measurement_schema: {
       metrics: [{ name: "median_score" }],
       derived: [{ name: "submission_count" }],
       chart: { x_kind: "CATEGORY" },
@@ -45,7 +45,7 @@ const BENCH_TIME = {
     publisher_slug: "timepub",
     name: "Time Bench",
     description: "A time-series benchmark.",
-    observation_schema: { metrics: [{ name: "skew_ms" }], derived: [], chart: { x_kind: "TIME" } },
+    measurement_schema: { metrics: [{ name: "skew_ms" }], derived: [], chart: { x_kind: "TIME" } },
   },
 };
 
@@ -60,19 +60,19 @@ const BENCH_AMLB = {
   },
 };
 
-// A found benchmark whose targets endpoint fails — exercises the SSR path's best-effort targets
-// fallback (head metadata still renders; the body block just omits the target list).
-const BENCH_NOTARGETS = {
-  id: "bench-notargets",
+// A found benchmark whose subjects endpoint fails — exercises the SSR path's best-effort subjects
+// fallback (head metadata still renders; the body block just omits the subject list).
+const BENCH_NOSUBJECTS = {
+  id: "bench-nosubjects",
   attributes: {
-    key: "no-targets",
+    key: "no-subjects",
     publisher_slug: "notarg",
-    name: "No Targets",
-    description: "A benchmark with no target data.",
+    name: "No Subjects",
+    description: "A benchmark with no subject data.",
   },
 };
 
-const TARGETS = {
+const SUBJECTS = {
   data: [
     { id: "t1", attributes: { key: "amd-ryzen", name: "AMD Ryzen 9 7950X" } },
     { id: "t2", attributes: { key: "intel-i9", name: "Intel Core i9-14900K" } },
@@ -96,7 +96,7 @@ function replyFor(path: string): { statusCode: number; data: string } {
     const key = queryParam(path, "filter[key]");
     if (key === "blender-cpu") return json({ data: [BENCH_BLENDER] });
     if (key === "time-bench") return json({ data: [BENCH_TIME] });
-    if (key === "no-targets") return json({ data: [BENCH_NOTARGETS] });
+    if (key === "no-subjects") return json({ data: [BENCH_NOSUBJECTS] });
     if (key === "bare-attributes") return json({ data: [{ id: "bench-bare" }] }); // row without attributes
     if (key === "ghost-benchmark") return json({ data: [] });
     if (key === "down-benchmark") return { statusCode: 503, data: "{}" };
@@ -104,11 +104,11 @@ function replyFor(path: string): { statusCode: number; data: string } {
     if (key === null) return json({ data: [BENCH_BLENDER, BENCH_AMLB] });
     return json({ data: [] });
   }
-  if (pathname === "/api/v1/targets") {
-    if (queryParam(path, "filter[benchmark]") === "bench-notargets") {
+  if (pathname === "/api/v1/subjects") {
+    if (queryParam(path, "filter[benchmark]") === "bench-nosubjects") {
       return { statusCode: 503, data: "{}" };
     }
-    return json(TARGETS);
+    return json(SUBJECTS);
   }
   return { statusCode: 404, data: "{}" };
 }

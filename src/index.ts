@@ -36,7 +36,7 @@ import {
   sitemapXml,
   str,
   type BenchmarkResource,
-  type TargetResource,
+  type SubjectResource,
 } from "./seo";
 
 const APEX_HOST = "smplmark.org";
@@ -161,27 +161,27 @@ async function serveBenchmarkPage(request: Request, env: Env): Promise<Response>
 
   const found = benchmark; // const alias so the rewriter closures see a non-null value
 
-  // Targets feed the crawlable body block; best-effort (the head metadata doesn't need them). Fetch
-  // only a sample for the visible list plus the true total, so a 5,000-target benchmark stays cheap.
-  let targets: TargetResource[] = [];
-  let targetTotal: number | undefined;
+  // Subjects feed the crawlable body block; best-effort (the head metadata doesn't need them). Fetch
+  // only a sample for the visible list plus the true total, so a 5,000-subject benchmark stays cheap.
+  let subjects: SubjectResource[] = [];
+  let subjectTotal: number | undefined;
   try {
     const doc = await fetchJson(
-      `${origin}/api/v1/targets?filter[benchmark]=${encodeURIComponent(found.id)}&page[size]=50&meta[total]=true`,
+      `${origin}/api/v1/subjects?filter[benchmark]=${encodeURIComponent(found.id)}&page[size]=50&meta[total]=true`,
     );
-    targets = dataArray(doc).flatMap((row) =>
+    subjects = dataArray(doc).flatMap((row) =>
       typeof row.id === "string"
-        ? [{ id: row.id, attributes: (row.attributes ?? {}) as TargetResource["attributes"] }]
+        ? [{ id: row.id, attributes: (row.attributes ?? {}) as SubjectResource["attributes"] }]
         : [],
     );
     const total = (doc as { meta?: { pagination?: { total?: unknown } } } | null)?.meta?.pagination?.total;
-    if (typeof total === "number") targetTotal = total;
+    if (typeof total === "number") subjectTotal = total;
   } catch {
-    targets = [];
+    subjects = [];
   }
 
   const headExtras = benchmarkHeadExtras(found, { apiOrigin: origin });
-  const body = benchmarkSsrBody(found, targets, targetTotal);
+  const body = benchmarkSsrBody(found, subjects, subjectTotal);
   const rewriter = new HTMLRewriter()
     .on("title", { element(e) { e.setInnerContent(pageTitle(found.attributes)); } })
     .on("head", { element(e) { e.append(`\n  ${headExtras}\n`, { html: true }); } })
@@ -236,6 +236,24 @@ async function redirectLegacyEmbed(request: Request, env: Env, key: string): Pro
   const url = new URL(request.url);
   url.pathname = `/embed/${encodeURIComponent(ref.publisher)}/${encodeURIComponent(ref.key)}.png`;
   return Response.redirect(url.toString(), 301);
+}
+
+/**
+ * Local dev loop only: tell the client viewer to read the same app origin the Worker uses for SSR,
+ * by injecting `window.SM_API_BASE` into the page <head>. This makes DEV_APP_ORIGIN the single
+ * switch for the whole site — SSR *and* client — so `npm run dev` browses the local app (:8788) and
+ * `npm run dev:remote` browses production, with no per-URL `?api=` override. No-op in production
+ * (DEV_APP_ORIGIN is unset there) and for non-HTML responses. An explicit `?api=` still wins (it's
+ * checked before window.SM_API_BASE in apiBase()).
+ */
+function withClientApiOrigin(response: Response, env: Env): Response {
+  const origin = env.DEV_APP_ORIGIN;
+  if (!origin) return response;
+  if (!(response.headers.get("Content-Type") ?? "").includes("text/html")) return response;
+  const tag = `<script>window.SM_API_BASE=${JSON.stringify(origin)};</script>`;
+  return new HTMLRewriter()
+    .on("head", { element(e) { e.append(`\n  ${tag}\n`, { html: true }); } })
+    .transform(response);
 }
 
 /** Rebuild the asset response with our own status + cache headers (the asset ETag no longer applies). */
@@ -321,7 +339,7 @@ async function serveEmbedImage(request: Request, env: Env): Promise<Response> {
   }
   if (!benchmark) return new Response("No published benchmark with that key", { status: 404 });
 
-  const chartXKind = (benchmark.attributes.observation_schema as { chart?: { x_kind?: unknown } } | undefined)
+  const chartXKind = (benchmark.attributes.measurement_schema as { chart?: { x_kind?: unknown } } | undefined)
     ?.chart?.x_kind;
   const invalid = validateEmbedParams(chartXKind, url.searchParams);
   if (invalid) return new Response(invalid, { status: 400 });
@@ -428,13 +446,13 @@ export default {
     // serveBenchmarkPage); the viewer then hydrates the interactive version on top. A legacy
     // single-segment /benchmarks/{key} 301s to its publisher URL.
     if (isBenchmarkDetail(url.pathname)) {
-      return serveBenchmarkPage(request, env);
+      return withClientApiOrigin(await serveBenchmarkPage(request, env), env);
     }
     if (isLegacyBenchmarkDetail(url.pathname)) {
-      return redirectLegacyBenchmark(request, env);
+      return withClientApiOrigin(await redirectLegacyBenchmark(request, env), env);
     }
 
     // Marketing pages, viewer assets, images, favicons.
-    return env.ASSETS.fetch(request);
+    return withClientApiOrigin(await env.ASSETS.fetch(request), env);
   },
 } satisfies ExportedHandler<Env>;

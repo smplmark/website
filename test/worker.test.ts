@@ -47,9 +47,9 @@ describe("website worker", () => {
       '"contentUrl":"https://app.smplmark.org/api/v1/measurements?filter[benchmark]=bench-blender-cpu"',
     );
 
-    // Crawlable body: the SSR content block is filled with real text + the target list.
+    // Crawlable body: the SSR content block is filled with real text + the subject list.
     expect(body).toContain("Median render scores");
-    expect(body).toContain("<h2>Targets (2)</h2>");
+    expect(body).toContain("<h2>Subjects (2)</h2>");
     expect(body).toContain("AMD Ryzen 9 7950X");
     expect(body).toContain("median_score");
   });
@@ -87,22 +87,22 @@ describe("website worker", () => {
     expect(body).not.toContain("application/ld+json"); // no injection on the fallback path
   });
 
-  it("renders head metadata even when the targets fetch fails (best-effort body)", async () => {
-    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/notarg/no-targets");
+  it("renders head metadata even when the subjects fetch fails (best-effort body)", async () => {
+    const res = await SELF.fetch("https://www.smplmark.org/benchmarks/notarg/no-subjects");
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toContain("<title>No Targets — smplmark</title>");
+    expect(body).toContain("<title>No Subjects — smplmark</title>");
     expect(body).toContain('"@type":"Dataset"');
-    expect(body).not.toContain("<h2>Targets"); // targets 503'd → the block omits them
+    expect(body).not.toContain("<h2>Subjects"); // subjects 503'd → the block omits them
   });
 
-  it("renders a found-but-attributeless row without crashing, skipping malformed targets", async () => {
+  it("renders a found-but-attributeless row without crashing, skipping malformed subjects", async () => {
     const res = await SELF.fetch("https://www.smplmark.org/benchmarks/barepub/bare-attributes");
     expect(res.status).toBe(200);
     const body = await res.text();
-    // No attributes → a generic title, and the two valid targets counted (the id-less one skipped).
+    // No attributes → a generic title, and the two valid subjects counted (the id-less one skipped).
     expect(body).toContain("<title>Benchmark — smplmark</title>");
-    expect(body).toContain("<h2>Targets (2)</h2>");
+    expect(body).toContain("<h2>Subjects (2)</h2>");
     expect(body).not.toContain("Malformed (no id)");
   });
 

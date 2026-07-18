@@ -321,7 +321,7 @@ async function load() {
             <p>${esc(a.description || "")}</p>
             ${cardChips(a)}
             ${cardSource(a)}
-            <div class="meta">${esc(metricNames(a.observation_schema))}</div>
+            <div class="meta">${esc(metricNames(a.measurement_schema))}</div>
           </a>`;
       })
       .join("");

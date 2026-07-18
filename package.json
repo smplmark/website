@@ -5,7 +5,8 @@
   "type": "module",
   "description": "smplmark website — the marketing site and published-benchmark viewer on Cloudflare Workers",
   "scripts": {
-    "dev": "wrangler dev --port ${PORT:-8787}",
+    "dev": "wrangler dev --port ${PORT:-8787} --var DEV_APP_ORIGIN:http://localhost:8788",
+    "dev:remote": "wrangler dev --port ${PORT:-8787} --var DEV_APP_ORIGIN:https://app.smplmark.org",
     "deploy": "wrangler deploy",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",

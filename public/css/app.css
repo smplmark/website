@@ -224,6 +224,13 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .attribution-name { color: var(--text); font-weight: 600; }
 .attribution-verified { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ok); border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 999px; padding: 1px 8px; }
 .attribution-verified svg { width: 12px; height: 12px; }
+/* Organization publisher icon: a domain-initial monogram with the domain's favicon layered on top
+   (revealed only once it loads; falls back to the monogram if no favicon resolves). */
+.attribution-icon { position: relative; display: inline-block; width: 20px; height: 20px; flex: none; vertical-align: middle; }
+.attribution-mono { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 4px; background: var(--panel-2); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; }
+.attribution-favicon { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 4px; object-fit: contain; background: var(--panel-2); opacity: 0; transition: opacity 0.15s ease; }
+.publisher-badge .attribution-icon { width: 34px; height: 34px; }
+.publisher-badge .attribution-mono { font-size: 18px; }
 
 .publisher-badge { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
 .publisher-badge .attribution-logo { height: 34px; max-width: 200px; }
@@ -288,7 +295,7 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .metrics-table .metric-unit { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
 .metrics-table .metric-desc { color: var(--muted); }
 
-/* Stats tab: a two-column label/value table (dates + the target/run/measurement counts), boxed the
+/* Stats tab: a two-column label/value table (dates + the subject/run/measurement counts), boxed the
    same way as the metrics card above. */
 .stats-table {
   border-collapse: separate;
@@ -384,11 +391,11 @@ footer.site a:hover { color: var(--text); }
 footer.site .footer-legal { max-width: var(--maxw); margin: 0 auto; padding: 0 20px 22px; }
 
 /* ── High-cardinality chart controls ── */
-.field input.target-search {
+.field input.subject-search {
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
   color: var(--text); font: inherit; font-size: 14px; padding: 8px 10px; margin-bottom: 6px;
 }
-.field input.target-search:focus { outline: none; border-color: var(--accent); }
+.field input.subject-search:focus { outline: none; border-color: var(--accent); }
 .more-bars {
   display: block; margin: 12px auto 0; background: var(--panel-2); color: var(--muted);
   border: 1px solid var(--border); border-radius: 999px; padding: 8px 18px; font: inherit;
@@ -578,13 +585,13 @@ footer.site a.gh svg { display: block; }
   .data-layout, .data-layout.panel-collapsed { grid-template-columns: minmax(0, 1fr); }
 }
 /* The worker server-renders a full crawlable fallback into #ssr-content (overview, metrics, the whole
-   target list, methodology); the viewer removes it on hydration and renders the compact interactive
+   subject list, methodology); the viewer removes it on hydration and renders the compact interactive
    UI. On a JS-capable client (marked with .js in benchmark.html's head) hide the fallback before it
-   ever paints, so there's no flash of the long untruncated target list before the rail appears.
+   ever paints, so there's no flash of the long untruncated subject list before the rail appears.
    Clients that don't run JS never get the .js class, so they keep the crawlable fallback. */
 .js #ssr-content { display: none; }
 
-.target-rail {
+.subject-rail {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel);
   padding: 12px; max-height: 560px; display: flex; flex-direction: column;
 }
@@ -596,7 +603,7 @@ footer.site a.gh svg { display: block; }
   font: inherit; font-size: 12px; padding: 1px 10px; cursor: pointer;
 }
 .rail-all:hover { border-color: var(--accent); }
-.target-rail .target-search { width: 100%; margin-bottom: 8px; height: 30px; font-size: 13px; }
+.subject-rail .subject-search { width: 100%; margin-bottom: 8px; height: 30px; font-size: 13px; }
 .rail-list { overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
 .rail-row {
   display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px;
@@ -679,7 +686,7 @@ body.embed .detail-head,
 body.embed .tabs,
 body.embed #load-status,
 body.embed .tab-panel:not([data-panel="data"]),
-body.embed .target-rail,
+body.embed .subject-rail,
 body.embed .lb-facets,
 body.embed .filter-panel,
 body.embed .controls,
@@ -773,7 +780,7 @@ body.embed .bars { flex: 1; min-height: 0; gap: 0; padding: 0; justify-content: 
 tr.scroll-sentinel { height: 0; }
 tr.scroll-sentinel td { padding: 0; border: none; height: 0; }
 
-/* ── Filter drawer (slide-over from the right; holds the target search + all facets) ── */
+/* ── Filter drawer (slide-over from the right; holds the subject search + all facets) ── */
 body.drawer-open { overflow: hidden; }
 .drawer-overlay {
   position: fixed; inset: 0; z-index: 60; background: rgba(0, 0, 0, 0.45);
@@ -872,7 +879,7 @@ body.modal-open { overflow: hidden; }
 .modal-error { margin: 0; color: var(--accent-2); font-size: 13px; }
 .takedown-confirm { margin: 0; padding: 14px 10px 16px; font-size: 14px; color: var(--text); }
 
-/* ── Collapsible left filter panel (TARGET + facets). The aside is just a clip window; the card is
+/* ── Collapsible left filter panel (SUBJECT + facets). The aside is just a clip window; the card is
    the fixed-width .panel-inner, which slides left (translateX) out of the shrinking window. ── */
 .filter-panel { overflow: hidden; }
 .panel-inner {
