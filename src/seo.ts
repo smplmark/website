@@ -281,13 +281,102 @@ export function notFoundHeadExtras(): string {
 
 // ── Visible SSR body content (removed by the viewer on hydration) ─────────────
 
-function paragraphs(text: string): string {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-  return trimmed
-    .split(/\n\s*\n/)
-    .map((p) => `<p>${escapeHtml(p.trim())}</p>`)
-    .join("");
+// A small, XSS-safe Markdown → HTML renderer for publisher-authored prose (Overview / Methodology),
+// mirroring the client viewer's renderer in public/js/benchmark.js so SSR and hydrated output match.
+// Literal text is HTML-escaped FIRST, so nothing from the source reaches the DOM as markup — only the
+// fixed tag set below is ever emitted, and link hrefs are restricted to http(s)/mailto. Emphasis uses
+// asterisks only, so snake_case identifiers are left alone. A pragmatic CommonMark subset, not the spec.
+function renderMarkdown(text: string): string {
+  if (text == null || text.trim() === "") return "";
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+
+  const linkHref = (u: string): string | null => {
+    const t = u.trim();
+    if (/^mailto:/i.test(t)) return t;
+    try {
+      const p = new URL(t);
+      return p.protocol === "http:" || p.protocol === "https:" ? p.href : null;
+    } catch {
+      return null;
+    }
+  };
+  const inline = (s: string): string => {
+    let res = "";
+    let rest = s;
+    const re = /(`+)([\s\S]*?)\1|\[([^\]]+)\]\(([^)\s]+)\)|(\*\*)([\s\S]+?)\*\*|(\*)([\s\S]+?)\*/;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(rest)) !== null) {
+      res += escapeHtml(rest.slice(0, m.index));
+      if (m[1] !== undefined) res += `<code>${escapeHtml(m[2])}</code>`;
+      else if (m[3] !== undefined) {
+        const href = linkHref(m[4]);
+        res += href
+          ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener nofollow">${inline(m[3])}</a>`
+          : escapeHtml(m[0]);
+      } else if (m[5] !== undefined) res += `<strong>${inline(m[6])}</strong>`;
+      else res += `<em>${inline(m[8])}</em>`;
+      rest = rest.slice(m.index + m[0].length);
+    }
+    return res + escapeHtml(rest);
+  };
+
+  const blank = (l: string) => /^\s*$/.test(l);
+  const heading = (l: string) => /^#{1,6}\s+/.test(l);
+  const quote = (l: string) => /^\s*>\s?/.test(l);
+  const ul = (l: string) => /^\s*[-*+]\s+/.test(l);
+  const ol = (l: string) => /^\s*\d+\.\s+/.test(l);
+  const rule = (l: string) => /^\s*([-*_])(\s*\1){2,}\s*$/.test(l);
+  const fence = (l: string) => /^\s*```/.test(l);
+
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (blank(line)) { i++; continue; }
+    if (fence(line)) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !fence(lines[i])) { code.push(lines[i]); i++; }
+      i++; // closing fence
+      out.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      continue;
+    }
+    if (heading(line)) {
+      const h = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (h) out.push(`<h${h[1].length}>${inline(h[2].trim())}</h${h[1].length}>`);
+      i++;
+      continue;
+    }
+    if (rule(line)) { out.push("<hr />"); i++; continue; }
+    if (quote(line)) {
+      const q: string[] = [];
+      while (i < lines.length && quote(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+      out.push(`<blockquote>${renderMarkdown(q.join("\n"))}</blockquote>`);
+      continue;
+    }
+    if (ul(line)) {
+      const items: string[] = [];
+      while (i < lines.length && ul(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, "")); i++; }
+      out.push(`<ul>${items.map((t) => `<li>${inline(t)}</li>`).join("")}</ul>`);
+      continue;
+    }
+    if (ol(line)) {
+      const items: string[] = [];
+      while (i < lines.length && ol(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, "")); i++; }
+      out.push(`<ol>${items.map((t) => `<li>${inline(t)}</li>`).join("")}</ol>`);
+      continue;
+    }
+    const para: string[] = [];
+    while (
+      i < lines.length && !blank(lines[i]) && !fence(lines[i]) && !heading(lines[i]) &&
+      !rule(lines[i]) && !quote(lines[i]) && !ul(lines[i]) && !ol(lines[i])
+    ) {
+      para.push(lines[i]);
+      i++;
+    }
+    out.push(`<p>${para.map((l) => inline(l)).join("<br />")}</p>`);
+  }
+  return out.join("");
 }
 
 /**
@@ -307,7 +396,7 @@ export function benchmarkSsrBody(
   const parts: string[] = [];
 
   const overview = str(a.about) || str(a.description);
-  if (overview) parts.push(paragraphs(overview));
+  if (overview) parts.push(renderMarkdown(overview));
 
   const metrics = metricNames(a.measurement_schema);
   if (metrics.length) {
@@ -330,7 +419,7 @@ export function benchmarkSsrBody(
   }
 
   const methodology = str(a.methodology);
-  if (methodology) parts.push(`<h2>Methodology</h2>${paragraphs(methodology)}`);
+  if (methodology) parts.push(`<h2>Methodology</h2>${renderMarkdown(methodology)}`);
 
   const publisher = publisherName(a.published_as);
   if (publisher) parts.push(`<p>Published by ${escapeHtml(publisher)}.</p>`);

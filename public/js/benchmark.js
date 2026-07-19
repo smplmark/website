@@ -9,7 +9,7 @@
 // runs are listed and flagged; live runs show a "still recording" indicator.
 
 const COLORS = ["#4f8cff", "#f78166", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff"];
-const RANGE_SECONDS = { all: null, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400 };
+const RANGE_SECONDS = { all: null, "1h": 3600, "12h": 12 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400 };
 
 const el = (id) => document.getElementById(id);
 const esc = (s) =>
@@ -260,12 +260,97 @@ async function fetchAllPages(url) {
   return { data: data, truncated: true };
 }
 
-function paragraphs(text) {
-  if (!text) return '<p class="muted">Not provided.</p>';
-  return String(text)
-    .split(/\n\s*\n/)
-    .map((p) => `<p>${esc(p.trim())}</p>`)
-    .join("");
+// A small, XSS-safe Markdown → HTML renderer for publisher-authored prose (Overview / Methodology).
+// Literal text is HTML-escaped FIRST, so nothing from the source reaches the DOM as markup — only the
+// fixed tag set below is ever emitted, and link hrefs are restricted to http(s)/mailto. Emphasis uses
+// asterisks only, so snake_case identifiers are left alone. A pragmatic CommonMark subset (headings,
+// bold/italic, inline + fenced code, links, lists, blockquotes, rules, paragraphs), not the full spec.
+function renderMarkdown(text) {
+  if (text == null || String(text).trim() === "") return '<p class="muted">Not provided.</p>';
+  const lines = String(text).replace(/\r\n?/g, "\n").split("\n");
+
+  const linkHref = (u) => {
+    const t = String(u).trim();
+    return /^mailto:/i.test(t) ? t : safeHttpUrl(t);
+  };
+  const inline = (s) => {
+    let res = "";
+    let rest = s;
+    const re = /(`+)([\s\S]*?)\1|\[([^\]]+)\]\(([^)\s]+)\)|(\*\*)([\s\S]+?)\*\*|(\*)([\s\S]+?)\*/;
+    let m;
+    while ((m = re.exec(rest)) !== null) {
+      res += esc(rest.slice(0, m.index));
+      if (m[1] !== undefined) res += "<code>" + esc(m[2]) + "</code>";
+      else if (m[3] !== undefined) {
+        const href = linkHref(m[4]);
+        res += href
+          ? '<a href="' + esc(href) + '" target="_blank" rel="noopener nofollow">' + inline(m[3]) + "</a>"
+          : esc(m[0]);
+      } else if (m[5] !== undefined) res += "<strong>" + inline(m[6]) + "</strong>";
+      else res += "<em>" + inline(m[8]) + "</em>";
+      rest = rest.slice(m.index + m[0].length);
+    }
+    return res + esc(rest);
+  };
+
+  const blank = (l) => /^\s*$/.test(l);
+  const heading = (l) => /^#{1,6}\s+/.test(l);
+  const quote = (l) => /^\s*>\s?/.test(l);
+  const ul = (l) => /^\s*[-*+]\s+/.test(l);
+  const ol = (l) => /^\s*\d+\.\s+/.test(l);
+  const rule = (l) => /^\s*([-*_])(\s*\1){2,}\s*$/.test(l);
+  const fence = (l) => /^\s*```/.test(l);
+
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (blank(line)) { i++; continue; }
+    if (fence(line)) {
+      const code = [];
+      i++;
+      while (i < lines.length && !fence(lines[i])) { code.push(lines[i]); i++; }
+      i++; // closing fence
+      out.push("<pre><code>" + esc(code.join("\n")) + "</code></pre>");
+      continue;
+    }
+    if (heading(line)) {
+      const h = /^(#{1,6})\s+(.*)$/.exec(line);
+      const n = h[1].length;
+      out.push("<h" + n + ">" + inline(h[2].trim()) + "</h" + n + ">");
+      i++;
+      continue;
+    }
+    if (rule(line)) { out.push("<hr />"); i++; continue; }
+    if (quote(line)) {
+      const q = [];
+      while (i < lines.length && quote(lines[i])) { q.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+      out.push("<blockquote>" + renderMarkdown(q.join("\n")) + "</blockquote>");
+      continue;
+    }
+    if (ul(line)) {
+      const items = [];
+      while (i < lines.length && ul(lines[i])) { items.push(lines[i].replace(/^\s*[-*+]\s+/, "")); i++; }
+      out.push("<ul>" + items.map((t) => "<li>" + inline(t) + "</li>").join("") + "</ul>");
+      continue;
+    }
+    if (ol(line)) {
+      const items = [];
+      while (i < lines.length && ol(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, "")); i++; }
+      out.push("<ol>" + items.map((t) => "<li>" + inline(t) + "</li>").join("") + "</ol>");
+      continue;
+    }
+    const para = [];
+    while (
+      i < lines.length && !blank(lines[i]) && !fence(lines[i]) && !heading(lines[i]) &&
+      !rule(lines[i]) && !quote(lines[i]) && !ul(lines[i]) && !ol(lines[i])
+    ) {
+      para.push(lines[i]);
+      i++;
+    }
+    out.push("<p>" + para.map((l) => inline(l)).join("<br />") + "</p>");
+  }
+  return out.join("") || '<p class="muted">Not provided.</p>';
 }
 
 function fmtDate(iso) {
@@ -403,6 +488,9 @@ async function init() {
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
   chartDecl = schema.chart || inferChart(metricList);
   chartMode = chartDecl ? chartDecl.x_kind || inferKind(chartDecl.x) : "TIME";
+  // Default visualization per mode: TIME/NUMBER open as a line/trend; CATEGORY opens as bars. A
+  // ?view= param (read below) overrides this.
+  chartView = chartMode === "CATEGORY" ? "bars" : "line";
 
   // One model for every benchmark, large or small (no server-side ranking endpoint): pull the WHOLE
   // benchmark into the browser — all subjects, all runs, and (lazily, on first draw) all measurements —
@@ -545,7 +633,7 @@ function renderBanners() {
 }
 
 function renderOverview() {
-  el("overview-about").innerHTML = paragraphs(benchmark.attributes.about || benchmark.attributes.description);
+  el("overview-about").innerHTML = renderMarkdown(benchmark.attributes.about || benchmark.attributes.description);
 }
 
 // Metrics live in their own tab, as a table: name · unit · description (unit is em-dash when absent).
@@ -574,7 +662,7 @@ function renderMetrics() {
 function renderMethodology() {
   const a = benchmark.attributes;
   if (a.methodology) {
-    el("methodology-body").innerHTML = paragraphs(a.methodology);
+    el("methodology-body").innerHTML = renderMarkdown(a.methodology);
     return;
   }
   const pa = a.published_as;
@@ -764,7 +852,7 @@ async function renderHistory() {
 
 // ── Tabs — hash-routed (#overview/#data/#metrics/#methodology/#publisher/#stats/#history) so
 // refresh restores the tab and the back button walks tab history. ──
-const TAB_NAMES = ["overview", "data", "metrics", "methodology", "stats", "history", "publisher"];
+const TAB_NAMES = ["overview", "data", "metrics", "methodology", "stats", "publisher", "history"];
 function activateTab(name, updateHash = true) {
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.tab === name);
   for (const p of document.querySelectorAll(".tab-panel")) p.classList.toggle("active", p.dataset.panel === name);
@@ -799,7 +887,7 @@ function setupTabs() {
 // sort); the hash keeps sole ownership of the tab. Every param is optional and validated
 // against loaded data: a bad value is dropped, never allowed to break rendering. ?api= and any
 // unrecognized params pass through every rewrite untouched. ──
-const VIEW_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort"];
+const VIEW_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort", "stat"];
 const DAY_MS = 86400000;
 
 function searchParams() {
@@ -920,7 +1008,11 @@ function readViewParams() {
   }
 
   const view = params.get("view");
-  if (view === "bars" || view === "table") chartView = view;
+  if (view === "bars" || view === "table" || view === "line") chartView = view;
+
+  // stat: which reducing statistic the bars/leaderboard ranks by (validated against the known set).
+  const stat = params.get("stat");
+  if (stat && STAT_BY_KEY.has(stat)) barsStat = stat;
 
   // sort: JSON:API style — "-metric" desc, "metric" asc; must name a declared metric.
   const sort = params.get("sort");
@@ -981,7 +1073,12 @@ function syncViewParams() {
   if (chartMode === "CATEGORY" && chartView === "table") {
     params.set("view", "table");
     if (tableSort.key) params.set("sort", (tableSort.desc ? "-" : "") + tableSort.key);
+  } else if (chartMode === "TIME" && chartView === "bars") {
+    params.set("view", "bars"); // TIME defaults to line, so the leaderboard view is worth persisting
   }
+
+  // The leaderboard statistic (bars views only); default "avg" serializes as absence.
+  if (chartView === "bars" && barsStat !== "avg") params.set("stat", barsStat);
 
   // Drawer filters → URL (so "Copy link"/"Copy image link" reproduce the filtered view; the embed
   // image cache already keys on facet.*/q, so each distinct filter yields its own cached image).
@@ -1054,18 +1151,109 @@ async function observationsBySubject(range) {
 }
 
 const AXIS = { stroke: "#9aa7b4", grid: { stroke: "#2a3140", width: 1 }, ticks: { stroke: "#2a3140", width: 1 } };
-function utcTicks(u, splits) {
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const pad2 = (n) => String(n).padStart(2, "0");
+// A compact UTC timestamp for the hover tooltip: "Jul 18, 22:14:03 UTC" (seconds included — skew is a
+// sub-minute quantity, so the seconds carry meaning).
+function fmtUtcStamp(sec) {
+  const d = new Date(sec * 1000);
+  return MONTHS[d.getUTCMonth()] + " " + d.getUTCDate() + ", " +
+    pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + " UTC";
+}
+// Adaptive UTC axis labels. uPlot passes the chosen tick increment (foundIncr, seconds); the label
+// granularity follows it — a date for day+ ticks, "HH:MM" (or "HH:MM:SS" when sub-minute) otherwise —
+// and the date is shown only on the first tick and wherever the UTC day rolls over, so a multi-day
+// window stays anchored without repeating the date on every tick and single-day windows stay terse.
+const DAY_SECONDS = 86400;
+function utcTimeTicks(u, splits, axisIdx, foundSpace, foundIncr) {
+  const incr = foundIncr || (splits.length > 1 ? splits[1] - splits[0] : 3600);
+  let prevDay = null;
   return splits.map((s) => {
     const d = new Date(s * 1000);
-    const p = (n) => String(n).padStart(2, "0");
-    return p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate()) + " " + p(d.getUTCHours()) + ":" + p(d.getUTCMinutes());
+    const dayKey = d.getUTCFullYear() + "-" + d.getUTCMonth() + "-" + d.getUTCDate();
+    const dateLabel = MONTHS[d.getUTCMonth()] + " " + d.getUTCDate();
+    if (incr >= DAY_SECONDS) { prevDay = dayKey; return dateLabel; }
+    const time = incr >= 60
+      ? pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes())
+      : pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds());
+    const showDate = prevDay === null || dayKey !== prevDay;
+    prevDay = dayKey;
+    return showDate ? dateLabel + " " + time : time;
   });
 }
 function destroyChart() {
   if (chart) { chart.destroy(); chart = null; }
+  const lg = el("chart-legend");
+  if (lg) { lg.innerHTML = ""; lg.hidden = true; }
   // Every render path calls destroyChart first, so this is where the bars' scroll/resize windowing
   // listener gets torn down — including paths that never re-arm it (empty bars, line charts).
   teardownIncremental();
+}
+
+// Our own legend (uPlot's native one is disabled): a static color-swatch + subject-name row per
+// plotted series. Purely a key — subject visibility is driven by the left filter panel, so nothing
+// here is clickable. Rendered below the plot; cleared by destroyChart for the bars/table/empty paths.
+function renderChartLegend(seriesSubjects) {
+  const host = el("chart-legend");
+  if (!host) return;
+  host.innerHTML = seriesSubjects
+    .map((t, i) =>
+      '<span class="chart-legend-item"><span class="chart-legend-swatch" style="background:' +
+      COLORS[i % COLORS.length] + '"></span>' +
+      '<span class="chart-legend-label">' + esc(t.attributes.name) + "</span></span>",
+    )
+    .join("");
+  host.hidden = seriesSubjects.length === 0;
+}
+
+// A cursor-following tooltip for the line/scatter chart. On every cursor move it snaps to the nearest
+// x-index, picks the series whose value there is nearest the pointer, and shows that subject, its
+// value (with unit), and the point's timestamp (TIME) or x-value (NUMBER). uPlot's native legend is
+// off, so this is the only hover readout. pointer-events:none keeps it from stealing the mouse.
+function attachChartTooltip(opts, seriesSubjects, yKey, timeX, xLabel) {
+  const unit = metricUnit(yKey);
+  let tip = null;
+  const hide = () => { if (tip) tip.style.display = "none"; };
+  opts.hooks = opts.hooks || {};
+  (opts.hooks.init = opts.hooks.init || []).push((u) => {
+    tip = document.createElement("div");
+    tip.className = "chart-tip";
+    tip.style.display = "none";
+    u.over.appendChild(tip);
+    u.over.addEventListener("mouseleave", hide);
+  });
+  (opts.hooks.setCursor = opts.hooks.setCursor || []).push((u) => {
+    const idx = u.cursor.idx;
+    const left = u.cursor.left, top = u.cursor.top;
+    if (idx == null || left == null || left < 0 || top == null || top < 0) return hide();
+    // Nearest series to the pointer among those with a value at this x-index.
+    let best = -1, bestDist = Infinity, bestVal = null, bestPy = 0;
+    for (let si = 1; si < u.series.length; si++) {
+      const v = u.data[si][idx];
+      if (v == null) continue;
+      const py = u.valToPos(v, "y");
+      const dist = Math.abs(py - top);
+      if (dist < bestDist) { bestDist = dist; best = si; bestVal = v; bestPy = py; }
+    }
+    if (best < 0) return hide();
+    const subject = seriesSubjects[best - 1];
+    const name = subject ? subject.attributes.name : u.series[best].label;
+    const xv = u.data[0][idx];
+    const xLine = timeX ? fmtUtcStamp(xv) : (xLabel || "x") + ": " + fmtCell(xv);
+    tip.innerHTML =
+      '<div class="chart-tip-head"><span class="chart-tip-dot" style="background:' +
+      COLORS[(best - 1) % COLORS.length] + '"></span><span class="chart-tip-name">' + esc(name) + "</span></div>" +
+      '<div class="chart-tip-meta">' + esc(yKey) + ": " + esc(fmtCell(bestVal) + (unit ? " " + unit : "")) + "</div>" +
+      '<div class="chart-tip-meta">' + esc(xLine) + "</div>";
+    tip.style.display = "block";
+    // Anchor near the focused point; flip to the left / above when close to the right / bottom edge.
+    const ttw = tip.offsetWidth, tth = tip.offsetHeight, pad = 14;
+    const tl = left + ttw + pad > u.over.clientWidth ? left - ttw - pad : left + pad;
+    let tt = bestPy - tth - pad;
+    if (tt < 0) tt = Math.min(bestPy + pad, u.over.clientHeight - tth);
+    tip.style.left = Math.max(0, tl) + "px";
+    tip.style.top = Math.max(0, tt) + "px";
+  });
 }
 
 function metricUnit(name) {
@@ -1109,6 +1297,9 @@ function renderXY(seriesSubjects, perSubjectPoints, yKey, timeX) {
     width: el("chart").clientWidth || 900,
     height: 420,
     scales: { x: { time: !!timeX } },
+    // Native legend off — we render our own static swatch legend + a custom hover tooltip below.
+    legend: { show: false },
+    cursor: { focus: { prox: 30 }, points: { size: 7 } },
     series: [
       timeX ? {} : { label: xLabel || "x" },
       ...seriesSubjects.map((t, i) => ({
@@ -1120,7 +1311,7 @@ function renderXY(seriesSubjects, perSubjectPoints, yKey, timeX) {
       })),
     ],
     axes: [
-      timeX ? Object.assign({ values: utcTicks }, AXIS) : Object.assign({ label: xLabel, labelSize: 30 }, AXIS),
+      timeX ? Object.assign({ values: utcTimeTicks, space: 72 }, AXIS) : Object.assign({ label: xLabel, labelSize: 30 }, AXIS),
       // Size the value gutter to the widest tick label so large (6–7 digit) values don't overrun
       // the rotated axis label. uPlot's default measure sticks to the first draw's magnitudes; this
       // re-derives it from the current ticks (~7px/char + gap/tick padding).
@@ -1135,27 +1326,26 @@ function renderXY(seriesSubjects, perSubjectPoints, yKey, timeX) {
       ),
     ],
   };
+  // Tooltip hooks (init + setCursor) go on first; the zoom hook appends to the same opts.hooks below.
+  attachChartTooltip(opts, seriesSubjects, yKey, timeX, xLabel);
   if (timeX) {
     // Drag-zoom → URL: setSelect fires on user drag only (uPlot's internal hide passes
     // fireHooks=false), so mirroring the window here can't feed back into a redraw. uPlot's
     // default zoom still applies — no refetch while zooming live.
-    opts.hooks = {
-      setSelect: [
-        (u) => {
-          if (!u.select || u.select.width <= 0) return;
-          if (preZoomRange === null) preZoomRange = rangeState;
-          rangeState = {
-            from: Math.round(u.posToVal(u.select.left, "x") * 1000),
-            to: Math.round(u.posToVal(u.select.left + u.select.width, "x") * 1000),
-          };
-          syncRangeSelect();
-          scheduleSyncViewParams();
-        },
-      ],
-    };
+    (opts.hooks.setSelect = opts.hooks.setSelect || []).push((u) => {
+      if (!u.select || u.select.width <= 0) return;
+      if (preZoomRange === null) preZoomRange = rangeState;
+      rangeState = {
+        from: Math.round(u.posToVal(u.select.left, "x") * 1000),
+        to: Math.round(u.posToVal(u.select.left + u.select.width, "x") * 1000),
+      };
+      syncRangeSelect();
+      scheduleSyncViewParams();
+    });
   }
   destroyChart();
   chart = new uPlot(opts, data, el("chart"));
+  renderChartLegend(seriesSubjects);
   if (timeX) {
     // uPlot's own dblclick listener (bound first) resets the zoom; ours restores the URL state.
     chart.over.addEventListener("dblclick", () => {
@@ -1215,6 +1405,40 @@ function renderIncremental(listEl, items, renderRow) {
   fill(); // first chunks to fill the initial screen
 }
 
+// ── Leaderboard statistics — the aggregate the "bars" view ranks subjects by. A TIME benchmark has
+// many measurements per subject, so a single bar needs a reduction (average skew, worst-case skew,
+// …). Percentiles use R-7 linear interpolation (Excel PERCENTILE.INC / NumPy default) to match the
+// server's ?meta[stats]=true output, so the on-screen leaderboard equals the API's numbers. ──
+function percentile(sorted, p) {
+  const n = sorted.length;
+  if (n === 0) return null;
+  if (n === 1) return sorted[0];
+  const rank = p * (n - 1);
+  const lo = Math.floor(rank), hi = Math.ceil(rank);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (rank - lo) * (sorted[hi] - sorted[lo]);
+}
+const STATS = [
+  { key: "avg", label: "Average", fn: (s) => s.reduce((a, b) => a + b, 0) / s.length },
+  { key: "median", label: "Median", fn: (s) => percentile(s, 0.5) },
+  { key: "min", label: "Minimum", fn: (s) => s[0] },
+  { key: "max", label: "Maximum", fn: (s) => s[s.length - 1] },
+  { key: "p95", label: "95th percentile", fn: (s) => percentile(s, 0.95) },
+  { key: "p99", label: "99th percentile", fn: (s) => percentile(s, 0.99) },
+  { key: "count", label: "Count", fn: (s) => s.length },
+];
+const STAT_BY_KEY = new Map(STATS.map((s) => [s.key, s]));
+let barsStat = "avg"; // which statistic the bars/leaderboard ranks by (applies to TIME + CATEGORY)
+function statLabel(key) { return (STAT_BY_KEY.get(key) || STAT_BY_KEY.get("avg")).label; }
+// Reduce a subject's y-values to the chosen statistic. Non-finite values are dropped; an empty set
+// yields null (ranked last, either sort direction). "count" is dimensionless — it ignores the value
+// magnitudes and just counts the finite measurements.
+function statValue(ys, statKey) {
+  const nums = ys.filter((v) => typeof v === "number" && isFinite(v)).sort((a, b) => a - b);
+  if (!nums.length) return null;
+  return (STAT_BY_KEY.get(statKey) || STAT_BY_KEY.get("avg")).fn(nums);
+}
+
 // ── Category bars: one ranked bar per subject for the chosen metric. A header over the value column
 // names the plotted metric (a picker when there's more than one) and toggles the sort direction, so
 // it's always clear WHAT the bars show. ──
@@ -1227,10 +1451,10 @@ function titleCase(s) {
 
 function renderBars(seriesSubjects, perSubjectPoints, yKey) {
   destroyChart();
+  const isCount = barsStat === "count";
   const rows = seriesSubjects.map((t, i) => {
     const pts = perSubjectPoints[i];
-    const mean = pts.length ? pts.reduce((s, p) => s + p.y, 0) / pts.length : null;
-    return { name: t.attributes.name, value: mean };
+    return { name: t.attributes.name, value: statValue(pts.map((p) => p.y), barsStat) };
   });
   // Rank by value in the chosen direction, but keep null-valued subjects last either way (a missing
   // measurement shouldn't jump to the top of an ascending sort).
@@ -1242,24 +1466,28 @@ function renderBars(seriesSubjects, perSubjectPoints, yKey) {
   });
   const max = Math.max(1, ...rows.map((r) => (r.value == null ? 0 : Math.abs(r.value))));
   const hasData = rows.some((r) => r.value != null);
-  // Above the bars: the plotted metric, title-cased in a large font (chosen in the filter bar), plus
-  // how many bars match the current filter out of the benchmark's total.
-  const unitSuffix = metricUnit(yKey) ? ' <span class="bars-metric-unit">(' + esc(metricUnit(yKey)) + ")</span>" : "";
+  // Above the bars: what the leaderboard ranks by. For a TIME benchmark (many measurements per
+  // subject) the reducing statistic leads the title — "Average Skew (ms)" — so it's never ambiguous
+  // whether a bar is a mean, a worst-case, etc. A CATEGORY benchmark has one value per subject, so
+  // the plain metric name reads best unless a non-average statistic was explicitly chosen.
+  const showStat = chartMode === "TIME" || barsStat !== "avg";
+  const unitSuffix = !isCount && metricUnit(yKey) ? ' <span class="bars-metric-unit">(' + esc(metricUnit(yKey)) + ")</span>" : "";
+  const headline = isCount ? "Measurement count" : (showStat ? statLabel(barsStat) + " " : "") + titleCase(yKey);
   const count = seriesSubjects.length, total = subjects.length;
   const countText = count === total
     ? count.toLocaleString() + (count === 1 ? " subject" : " subjects")
     : count.toLocaleString() + " of " + total.toLocaleString() + " subjects";
   const title =
     '<div class="bars-title">' +
-    '<h3 class="bars-metric-title">' + esc(titleCase(yKey)) + unitSuffix + "</h3>" +
+    '<h3 class="bars-metric-title">' + esc(headline) + unitSuffix + "</h3>" +
     '<span class="bars-match-count">' + countText + "</span></div>";
   el("chart").innerHTML = title + '<div class="bars" id="bars-list"></div>';
   el("empty").hidden = hasData;
   if (!hasData) { el("bars-list").remove(); return; }
-  const unit = metricUnit(yKey);
+  const unit = isCount ? "" : metricUnit(yKey);
   const renderRow = (r, i) => {
     const w = r.value == null ? 0 : Math.round((Math.abs(r.value) / max) * 100);
-    const val = r.value == null ? "—" : fmtCell(r.value) + (unit ? " " + unit : "");
+    const val = r.value == null ? "—" : isCount ? r.value.toLocaleString() : fmtCell(r.value) + (unit ? " " + unit : "");
     return (
       '<div class="bar-row"><div class="bar-label" title="' + esc(r.name) + '">' + esc(r.name) + "</div>" +
       '<div class="bar-track"><div class="bar-fill" style="width:' + w + "%;background:" + COLORS[i % COLORS.length] + '"></div></div>' +
@@ -1357,20 +1585,25 @@ async function drawChart() {
   el("chart-status").textContent = "Loading…";
   try {
     const { bySubject, truncated } = await observationsBySubject(range);
+    // Bars/leaderboard views (TIME or CATEGORY) list one ranked bar per subject and window on scroll,
+    // so they rank ALL selected subjects. Only overlaid LINE/scatter series are capped — dozens of
+    // lines are unreadable and slow.
+    const barsView = chartView === "bars" && (chartMode === "TIME" || chartMode === "CATEGORY");
     let seriesNote = "";
-    if (chartMode !== "CATEGORY" && seriesSubjects.length > MAX_SERIES) {
+    if (!barsView && chartMode !== "CATEGORY" && seriesSubjects.length > MAX_SERIES) {
       seriesSubjects = seriesSubjects.slice(0, MAX_SERIES);
       seriesNote = " · first " + MAX_SERIES + " selected subjects plotted — narrow the subject list to focus";
     }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
     const perSubjectPoints = seriesSubjects.map((t) => pointsFor(bySubject.get(t.id) || [], yKey, xKey));
     if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesSubjects, bySubject);
-    else if (chartMode === "CATEGORY") renderBars(seriesSubjects, perSubjectPoints, yKey);
+    else if (barsView) renderBars(seriesSubjects, perSubjectPoints, yKey);
     else renderXY(seriesSubjects, perSubjectPoints, yKey, chartMode === "TIME");
     const total = perSubjectPoints.reduce((n, pts) => n + pts.length, 0);
+    const viewNoun = barsView ? "leaderboard" : chartMode === "CATEGORY" ? "table" : chartMode.toLowerCase() + " chart";
     el("chart-status").textContent =
       total + " measurements · " + seriesSubjects.length + " subject(s) · metric “" + yKey + "” · " +
-      chartMode.toLowerCase() + " chart" +
+      viewNoun +
       (truncated ? " · large dataset — first " + MAX_PAGES * PAGE_SIZE + " measurements loaded" : "") +
       seriesNote + ".";
   } catch (err) {
@@ -1796,7 +2029,7 @@ function defaultMetricSelection() {
   const kept = ordered.slice(0, Math.min(fit, ordered.length));
   return names.filter((n) => kept.includes(n)); // schema order
 }
-function barsSingle() { return chartMode === "CATEGORY" && chartView === "bars"; }
+function barsSingle() { return chartView === "bars"; } // bars rank ONE metric — TIME or CATEGORY
 function defaultBarsMetric() {
   const names = metricList.map((m) => m.name);
   if (chartDecl && names.includes(chartDecl.y)) return chartDecl.y;
@@ -2018,7 +2251,6 @@ function renderBarControls() {
   box.innerHTML = "";
   // Drop the previous Columns-dropdown document listener so it can't accumulate across re-renders.
   if (colsDocHandler) { document.removeEventListener("click", colsDocHandler); colsDocHandler = null; }
-  if (chartMode !== "CATEGORY") return;
   if (chartView === "bars") {
     const metricSel =
       metricList.length > 1
@@ -2030,18 +2262,28 @@ function renderBarControls() {
             })
             .join("") + "</select></label>"
         : "";
+    // The reducing statistic — only for TIME, where a subject has many measurements to reduce. A
+    // CATEGORY bar is one scalar per subject, so its statistic is degenerate; the picker is omitted.
+    const statSel =
+      chartMode === "TIME"
+        ? '<label class="field"><span class="vh">Statistic</span><select id="stat-select" class="bar-select" title="Statistic">' +
+          STATS.map((s) => '<option value="' + s.key + '"' + (s.key === barsStat ? " selected" : "") + ">" + esc(s.label) + "</option>").join("") +
+          "</select></label>"
+        : "";
     const sortSel =
       '<label class="field"><span class="vh">Sort direction</span><select id="sort-select" class="bar-select">' +
       '<option value="desc"' + (barsDesc ? " selected" : "") + ">Descending</option>" +
       '<option value="asc"' + (!barsDesc ? " selected" : "") + ">Ascending</option></select></label>";
-    box.innerHTML = metricSel + sortSel;
+    box.innerHTML = metricSel + statSel + sortSel;
     const ms = el("metric-select");
     if (ms) ms.addEventListener("change", () => { metricSelection = [ms.value]; drawChart(); });
+    const ss = el("stat-select");
+    if (ss) ss.addEventListener("change", () => { barsStat = ss.value; drawChart(); });
     el("sort-select").addEventListener("change", (e) => { barsDesc = e.target.value === "desc"; drawChart(); });
     return;
   }
-  // Table: a Columns checkbox dropdown (which metric columns to show).
-  if (metricList.length <= 1) return;
+  // Table: a Columns checkbox dropdown (which metric columns to show). CATEGORY-only.
+  if (chartMode !== "CATEGORY" || metricList.length <= 1) return;
   box.innerHTML =
     '<div class="field"><div class="dropdown" id="cols-dd">' +
     '<button type="button" class="dropdown-toggle" id="cols-toggle"></button>' +
@@ -2098,15 +2340,27 @@ function setupChartControls() {
   }
   renderFilterPanel();
 
-  if (chartMode === "CATEGORY") {
+  // View picker — no "View" label, slid to the right (before Share/Download). TIME offers the trend
+  // line vs. a per-subject leaderboard; CATEGORY offers bars vs. a table; NUMBER has no alternate.
+  const VIEW_OPTIONS = {
+    TIME: [{ v: "line", label: "Line" }, { v: "bars", label: "Bars" }],
+    CATEGORY: [{ v: "bars", label: "Bars" }, { v: "table", label: "Table" }],
+  };
+  const viewOpts = VIEW_OPTIONS[chartMode];
+  if (viewOpts) {
+    // Clamp an out-of-mode ?view= (e.g. a shared TIME link carrying view=table) to a valid option.
+    if (!viewOpts.some((o) => o.v === chartView)) chartView = viewOpts[0].v;
     if (chartView === "bars" && metricSelection.length !== 1) metricSelection = [currentY()];
     if (chartView === "table" && !metricSelection.length) metricSelection = defaultMetricSelection();
-    // View picker (Bars | Table) — no "View" label, slid to the right (before Share/Download).
     const view = el("view-controls");
     view.innerHTML =
       '<div class="segmented" role="radiogroup" aria-label="View">' +
-      '<button type="button" class="seg-option' + (chartView === "bars" ? " active" : "") + '" data-view="bars" role="radio" aria-checked="' + (chartView === "bars") + '">Bars</button>' +
-      '<button type="button" class="seg-option' + (chartView === "table" ? " active" : "") + '" data-view="table" role="radio" aria-checked="' + (chartView === "table") + '">Table</button>' +
+      viewOpts
+        .map((o) =>
+          '<button type="button" class="seg-option' + (chartView === o.v ? " active" : "") + '" data-view="' + o.v +
+          '" role="radio" aria-checked="' + (chartView === o.v) + '">' + o.label + "</button>",
+        )
+        .join("") +
       "</div>";
     view.querySelectorAll(".seg-option").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -2117,7 +2371,7 @@ function setupChartControls() {
           b.classList.toggle("active", on);
           b.setAttribute("aria-checked", String(on));
         });
-        // Bars ⇒ one metric; Table ⇒ the fitting column set (or a carried-over multi-selection).
+        // Bars/Line ⇒ one metric; Table ⇒ the fitting column set (or a carried-over multi-selection).
         if (chartView === "table") metricSelection = metricSelection.length > 1 ? metricSelection : defaultMetricSelection();
         else metricSelection = [currentY()];
         tableSort = { key: null, desc: true };

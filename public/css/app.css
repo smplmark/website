@@ -384,6 +384,25 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .u-legend { color: var(--muted); font-size: 13px; }
 .u-legend .u-marker { border-radius: 2px; }
 
+/* Static, non-interactive chart legend (subject visibility is driven by the filter panel, so this is
+   only a color key — no checkboxes, nothing clickable). */
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 14px 6px 2px; }
+.chart-legend[hidden] { display: none; }
+.chart-legend-item { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+.chart-legend-swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+.chart-legend-label { white-space: nowrap; }
+
+/* Cursor-following hover tooltip on the line/scatter chart (uPlot's native legend is disabled). */
+.chart-tip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 9px; font-size: 12px; color: var(--text); line-height: 1.35;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35); white-space: nowrap;
+}
+.chart-tip-head { display: flex; align-items: center; gap: 6px; font-weight: 600; margin-bottom: 3px; }
+.chart-tip-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.chart-tip-meta { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
 footer.site { border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; margin-top: 40px; }
 footer.site .wrap { padding: 22px 20px 12px; display: flex; gap: 16px; align-items: center; }
 footer.site a { color: var(--muted); }
@@ -695,6 +714,7 @@ body.embed .lb-pager,
 body.embed #lb-status,
 body.embed #chart-status,
 body.embed .u-legend { display: none !important; }
+body.embed .chart-legend { display: none !important; } /* embeds name the metric in the caption */
 body.embed main { padding: 0; }
 body.embed .wrap { max-width: none; width: 1200px; height: 630px; padding: 0; position: relative; }
 /* Reserve the title (60px) and caption (46px) bands, plus a ~20px breathing gap above and below the

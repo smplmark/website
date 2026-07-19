@@ -328,6 +328,61 @@ describe("benchmarkSsrBody", () => {
     expect(body).not.toContain("<script>x</script>");
   });
 
+  it("renders Markdown in the overview (headings, emphasis, safe links)", () => {
+    const body = benchmarkSsrBody(
+      bench({ about: "# Heading\n\nSome **bold** and a [safe link](https://example.com).", methodology: "" }),
+      [],
+    );
+    expect(body).toContain("<h1>Heading</h1>");
+    expect(body).toContain("<strong>bold</strong>");
+    expect(body).toContain('<a href="https://example.com/" target="_blank" rel="noopener nofollow">safe link</a>');
+  });
+
+  it("never turns an unsafe (javascript:) link into an anchor", () => {
+    const body = benchmarkSsrBody(
+      bench({ about: "Click [x](javascript:alert(1)) then.", methodology: "" }),
+      [],
+    );
+    expect(body).not.toContain("<a ");
+    expect(body).not.toContain('href="javascript');
+  });
+
+  it("renders the full Markdown block set (lists, quote, code, rule, soft breaks)", () => {
+    const md = [
+      "## Sub",
+      "",
+      "Line one",
+      "continued.",
+      "",
+      "- alpha",
+      "- beta",
+      "",
+      "1. first",
+      "2. second",
+      "",
+      "> quoted *text*",
+      "",
+      "Inline `code`, a [mail](mailto:a@b.com), and _under_score kept.",
+      "",
+      "```",
+      "raw <code> block",
+      "```",
+      "",
+      "---",
+    ].join("\n");
+    const body = benchmarkSsrBody(bench({ about: md, methodology: "" }), []);
+    expect(body).toContain("<h2>Sub</h2>");
+    expect(body).toContain("Line one<br />continued.");
+    expect(body).toContain("<ul><li>alpha</li><li>beta</li></ul>");
+    expect(body).toContain("<ol><li>first</li><li>second</li></ol>");
+    expect(body).toContain("<blockquote><p>quoted <em>text</em></p></blockquote>");
+    expect(body).toContain("<code>code</code>");
+    expect(body).toContain('<a href="mailto:a@b.com" target="_blank" rel="noopener nofollow">mail</a>');
+    expect(body).toContain("_under_score kept."); // underscores are never emphasis
+    expect(body).toContain("<pre><code>raw &lt;code&gt; block</code></pre>");
+    expect(body).toContain("<hr />");
+  });
+
   it("omits sections with no data (unpublished, metric-less, subject-less)", () => {
     const body = benchmarkSsrBody(
       bench({
