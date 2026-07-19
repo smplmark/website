@@ -22,6 +22,8 @@
   --control-h: 35px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Filled-triangle dropdown indicator (replaces the native chevron); theme-swapped fill below. */
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%239aa7b4'/%3E%3C/svg%3E");
 }
 
 /* The light palette is declared twice on purpose — CSS can't share one block between a media query
@@ -41,6 +43,7 @@
     --ok: #1a7f37;
     --tab-active-bg: #ffffff;
     --logo: url(/img/logo-light.png);
+    --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%235b6570'/%3E%3C/svg%3E");
   }
 }
 
@@ -57,6 +60,7 @@
   --ok: #1a7f37;
   --tab-active-bg: #ffffff;
   --logo: url(/img/logo-light.png);
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%235b6570'/%3E%3C/svg%3E");
 }
 
 * { box-sizing: border-box; }
@@ -844,6 +848,16 @@ body.drawer-open { overflow: hidden; }
   border-radius: 7px; height: var(--control-h); padding: 0 10px; font-size: 14px; font-family: var(--sans);
 }
 .bar-select:focus { outline: none; border-color: var(--accent); }
+/* Every dropdown: native chevron removed, replaced by a filled triangle set in from the right edge
+   (position + extra padding-right keep it clear of the value text). */
+.field select, .bar-select, .bars-metric-select select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
 .view-controls { display: flex; align-items: center; }
 .icon-btn {
   display: inline-flex; align-items: center; justify-content: center;

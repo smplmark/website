@@ -887,7 +887,7 @@ function setupTabs() {
 // sort); the hash keeps sole ownership of the tab. Every param is optional and validated
 // against loaded data: a bad value is dropped, never allowed to break rendering. ?api= and any
 // unrecognized params pass through every rewrite untouched. ──
-const VIEW_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort", "stat"];
+const VIEW_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort", "stat", "dir"];
 const DAY_MS = 86400000;
 
 function searchParams() {
@@ -1014,6 +1014,11 @@ function readViewParams() {
   const stat = params.get("stat");
   if (stat && STAT_BY_KEY.has(stat)) barsStat = stat;
 
+  // dir: the bars/leaderboard sort direction (default descending). Persisted so a refresh keeps it.
+  const dir = params.get("dir");
+  if (dir === "asc") barsDesc = false;
+  else if (dir === "desc") barsDesc = true;
+
   // sort: JSON:API style — "-metric" desc, "metric" asc; must name a declared metric.
   const sort = params.get("sort");
   if (sort) {
@@ -1079,6 +1084,9 @@ function syncViewParams() {
 
   // The leaderboard statistic (bars views only); default "avg" serializes as absence.
   if (chartView === "bars" && barsStat !== "avg") params.set("stat", barsStat);
+
+  // The leaderboard sort direction (bars views only); default descending serializes as absence.
+  if (chartView === "bars" && !barsDesc) params.set("dir", "asc");
 
   // Drawer filters → URL (so "Copy link"/"Copy image link" reproduce the filtered view; the embed
   // image cache already keys on facet.*/q, so each distinct filter yields its own cached image).
@@ -1212,10 +1220,28 @@ function renderChartLegend(seriesSubjects) {
 // off, so this is the only hover readout. pointer-events:none keeps it from stealing the mouse.
 function attachChartTooltip(opts, seriesSubjects, yKey, timeX, xLabel) {
   const unit = metricUnit(yKey);
-  let tip = null;
-  const hide = () => { if (tip) tip.style.display = "none"; };
+  let tip = null, uref = null, lastFocus = -1;
+  const clearFocus = () => { if (uref && lastFocus !== -1) { uref.setSeries(null, { focus: false }); lastFocus = -1; } };
+  const hide = () => { if (tip) tip.style.display = "none"; clearFocus(); };
+  // Subjects are sampled at different times, so the series are sparse (null between a subject's own
+  // points). Snap EACH series to its OWN nearest non-null sample — otherwise a shared x-index lands on
+  // whichever single series happens to have a point there (e.g. one lone extreme value) and every other
+  // line is null and never considered. Also gives every series a cursor point sitting on its own line.
+  opts.cursor = opts.cursor || {};
+  opts.cursor.dataIdx = (u, seriesIdx, closestIdx) => {
+    const ys = u.data[seriesIdx];
+    if (ys[closestIdx] != null) return closestIdx;
+    let lo = closestIdx - 1, hi = closestIdx + 1;
+    while (lo >= 0 || hi < ys.length) {
+      if (lo >= 0 && ys[lo] != null) return lo;
+      if (hi < ys.length && ys[hi] != null) return hi;
+      lo--; hi++;
+    }
+    return closestIdx;
+  };
   opts.hooks = opts.hooks || {};
   (opts.hooks.init = opts.hooks.init || []).push((u) => {
+    uref = u;
     tip = document.createElement("div");
     tip.className = "chart-tip";
     tip.style.display = "none";
@@ -1223,22 +1249,28 @@ function attachChartTooltip(opts, seriesSubjects, yKey, timeX, xLabel) {
     u.over.addEventListener("mouseleave", hide);
   });
   (opts.hooks.setCursor = opts.hooks.setCursor || []).push((u) => {
-    const idx = u.cursor.idx;
-    const left = u.cursor.left, top = u.cursor.top;
-    if (idx == null || left == null || left < 0 || top == null || top < 0) return hide();
-    // Nearest series to the pointer among those with a value at this x-index.
-    let best = -1, bestDist = Infinity, bestVal = null, bestPy = 0;
+    const cl = u.cursor.left, ct = u.cursor.top;
+    if (cl == null || cl < 0 || ct == null || ct < 0) return hide();
+    // Nearest DATA POINT to the pointer in 2D (x AND y), across each series' own nearest sample. Both
+    // axes count, so a lower line the pointer sits on wins over a far-above line at the same column.
+    let best = -1, bestDist = Infinity, bestVal = null, bestIdx = -1, bestPx = 0, bestPy = 0;
     for (let si = 1; si < u.series.length; si++) {
-      const v = u.data[si][idx];
+      const sidx = u.cursor.idxs ? u.cursor.idxs[si] : u.cursor.idx;
+      if (sidx == null) continue;
+      const v = u.data[si][sidx];
       if (v == null) continue;
+      const px = u.valToPos(u.data[0][sidx], "x");
       const py = u.valToPos(v, "y");
-      const dist = Math.abs(py - top);
-      if (dist < bestDist) { bestDist = dist; best = si; bestVal = v; bestPy = py; }
+      const dx = px - cl, dy = py - ct;
+      const dist = dx * dx + dy * dy;
+      if (dist < bestDist) { bestDist = dist; best = si; bestVal = v; bestIdx = sidx; bestPx = px; bestPy = py; }
     }
     if (best < 0) return hide();
+    // Emphasize the same line the tooltip names (kept in sync, so highlight ≠ readout can't happen).
+    if (best !== lastFocus) { u.setSeries(best, { focus: true }); lastFocus = best; }
     const subject = seriesSubjects[best - 1];
     const name = subject ? subject.attributes.name : u.series[best].label;
-    const xv = u.data[0][idx];
+    const xv = u.data[0][bestIdx];
     const xLine = timeX ? fmtUtcStamp(xv) : (xLabel || "x") + ": " + fmtCell(xv);
     tip.innerHTML =
       '<div class="chart-tip-head"><span class="chart-tip-dot" style="background:' +
@@ -1246,9 +1278,9 @@ function attachChartTooltip(opts, seriesSubjects, yKey, timeX, xLabel) {
       '<div class="chart-tip-meta">' + esc(yKey) + ": " + esc(fmtCell(bestVal) + (unit ? " " + unit : "")) + "</div>" +
       '<div class="chart-tip-meta">' + esc(xLine) + "</div>";
     tip.style.display = "block";
-    // Anchor near the focused point; flip to the left / above when close to the right / bottom edge.
+    // Anchor near the chosen point; flip to the left / above when close to the right / bottom edge.
     const ttw = tip.offsetWidth, tth = tip.offsetHeight, pad = 14;
-    const tl = left + ttw + pad > u.over.clientWidth ? left - ttw - pad : left + pad;
+    const tl = bestPx + ttw + pad > u.over.clientWidth ? bestPx - ttw - pad : bestPx + pad;
     let tt = bestPy - tth - pad;
     if (tt < 0) tt = Math.min(bestPy + pad, u.over.clientHeight - tth);
     tip.style.left = Math.max(0, tl) + "px";
@@ -1299,7 +1331,9 @@ function renderXY(seriesSubjects, perSubjectPoints, yKey, timeX) {
     scales: { x: { time: !!timeX } },
     // Native legend off — we render our own static swatch legend + a custom hover tooltip below.
     legend: { show: false },
-    cursor: { focus: { prox: 30 }, points: { size: 7 } },
+    // No prox: uPlot's own hover-focus is x-index based (wrong series for sparse data); the tooltip's
+    // 2D pick drives the focus instead (see attachChartTooltip). alpha dims the non-focused lines.
+    cursor: { focus: { alpha: 0.35 }, points: { size: 7 } },
     series: [
       timeX ? {} : { label: xLabel || "x" },
       ...seriesSubjects.map((t, i) => ({
@@ -2252,34 +2286,47 @@ function renderBarControls() {
   // Drop the previous Columns-dropdown document listener so it can't accumulate across re-renders.
   if (colsDocHandler) { document.removeEventListener("click", colsDocHandler); colsDocHandler = null; }
   if (chartView === "bars") {
-    const metricSel =
-      metricList.length > 1
-        ? '<label class="field"><span class="vh">Metric</span><select id="metric-select" class="bar-select">' +
-          metricList
-            .map((m) => {
-              const label = titleCase(m.name) + (metricUnit(m.name) ? " (" + metricUnit(m.name) + ")" : "");
-              return '<option value="' + esc(m.name) + '"' + (m.name === currentY() ? " selected" : "") + ">" + esc(label) + "</option>";
-            })
-            .join("") + "</select></label>"
-        : "";
-    // The reducing statistic — only for TIME, where a subject has many measurements to reduce. A
-    // CATEGORY bar is one scalar per subject, so its statistic is degenerate; the picker is omitted.
-    const statSel =
-      chartMode === "TIME"
-        ? '<label class="field"><span class="vh">Statistic</span><select id="stat-select" class="bar-select" title="Statistic">' +
-          STATS.map((s) => '<option value="' + s.key + '"' + (s.key === barsStat ? " selected" : "") + ">" + esc(s.label) + "</option>").join("") +
-          "</select></label>"
-        : "";
-    const sortSel =
-      '<label class="field"><span class="vh">Sort direction</span><select id="sort-select" class="bar-select">' +
-      '<option value="desc"' + (barsDesc ? " selected" : "") + ">Descending</option>" +
-      '<option value="asc"' + (!barsDesc ? " selected" : "") + ">Ascending</option></select></label>";
-    box.innerHTML = metricSel + statSel + sortSel;
+    // One combined "rank by" dropdown folds the sort direction in — "<key> ascending/descending",
+    // alphabetized — to save filter-bar space. TIME ranks by a chosen statistic (many samples per
+    // subject to reduce); CATEGORY ranks by the metric value (one scalar per subject). A TIME chart
+    // with more than one metric still gets a separate Metric picker beside it.
+    const bothDirs = (key, label) => [
+      { value: key + ":desc", label: label + " descending" },
+      { value: key + ":asc", label: label + " ascending" },
+    ];
+    const alpha = (a, z) => a.label.localeCompare(z.label, undefined, { numeric: true, sensitivity: "base" });
+    let opts, current, metricSel = "";
+    if (chartMode === "TIME") {
+      metricSel =
+        metricList.length > 1
+          ? '<label class="field"><span class="vh">Metric</span><select id="metric-select" class="bar-select">' +
+            metricList
+              .map((m) => {
+                const label = titleCase(m.name) + (metricUnit(m.name) ? " (" + metricUnit(m.name) + ")" : "");
+                return '<option value="' + esc(m.name) + '"' + (m.name === currentY() ? " selected" : "") + ">" + esc(label) + "</option>";
+              })
+              .join("") + "</select></label>"
+          : "";
+      opts = STATS.flatMap((s) => bothDirs(s.key, s.label)).sort(alpha);
+      current = barsStat + ":" + (barsDesc ? "desc" : "asc");
+    } else {
+      opts = metricList.flatMap((m) => bothDirs(m.name, titleCase(m.name))).sort(alpha);
+      current = currentY() + ":" + (barsDesc ? "desc" : "asc");
+    }
+    const rankSel =
+      '<label class="field"><span class="vh">Sort by</span><select id="rank-select" class="bar-select" title="Sort by">' +
+      opts.map((o) => '<option value="' + esc(o.value) + '"' + (o.value === current ? " selected" : "") + ">" + esc(o.label) + "</option>").join("") +
+      "</select></label>";
+    box.innerHTML = metricSel + rankSel;
     const ms = el("metric-select");
     if (ms) ms.addEventListener("change", () => { metricSelection = [ms.value]; drawChart(); });
-    const ss = el("stat-select");
-    if (ss) ss.addEventListener("change", () => { barsStat = ss.value; drawChart(); });
-    el("sort-select").addEventListener("change", (e) => { barsDesc = e.target.value === "desc"; drawChart(); });
+    el("rank-select").addEventListener("change", (e) => {
+      const val = e.target.value, i = val.lastIndexOf(":");
+      const key = val.slice(0, i);
+      barsDesc = val.slice(i + 1) !== "asc";
+      if (chartMode === "TIME") barsStat = key; else metricSelection = [key];
+      drawChart();
+    });
     return;
   }
   // Table: a Columns checkbox dropdown (which metric columns to show). CATEGORY-only.
