@@ -33,6 +33,12 @@ describe("canonicalEmbedQuery", () => {
   it("is empty for a default (paramless) view", () => {
     expect(canonicalEmbedQuery(q("embed=1&api=http://localhost:8788"))).toBe("");
   });
+
+  it("keeps the leaderboard statistic, sort direction, and theme so the image reflects them", () => {
+    expect(canonicalEmbedQuery(q("view=bars&stat=median&dir=asc&theme=dark"))).toBe(
+      "dir=asc&stat=median&theme=dark&view=bars",
+    );
+  });
 });
 
 describe("embedObjectKey", () => {

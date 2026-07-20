@@ -37,10 +37,12 @@ function withApi(path) {
 }
 
 function apiFetchHint() {
-  const h = location.hostname;
-  return h === "localhost" || h === "127.0.0.1"
-    ? " Is the app Worker running? Start it with `npm run dev` in the app repo (or the \u201Capi\u201D server in the preview panel) \u2014 it serves the local API on :8788."
-    : "";
+  // Match the hint to the API origin actually in use (local app Worker vs. a remote API).
+  const base = apiBase();
+  if (/localhost|127\.0\.0\.1/.test(base)) {
+    return " Is the app Worker running? Start it with `npm run dev` in the app repo (or the \u201Capi\u201D server in the preview panel) \u2014 it serves the local API on " + base.replace(/^https?:\/\//, "") + ".";
+  }
+  return base ? " Couldn\u2019t reach the API at " + base + " \u2014 it may be temporarily unavailable." : "";
 }
 
 function esc(s) {

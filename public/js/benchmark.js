@@ -18,10 +18,22 @@ const esc = (s) =>
   );
 
 function apiFetchHint() {
-  const h = location.hostname;
-  return h === "localhost" || h === "127.0.0.1"
-    ? " Is the app Worker running? Start it with `npm run dev` in the app repo (or the \u201Capi\u201D server in the preview panel) \u2014 it serves the local API on :8788."
-    : "";
+  // Tailor the hint to the API origin actually in use (local app Worker vs. a remote API), so a
+  // remote-mode failure never sends you to start a :8788 Worker you're not even pointed at.
+  const base = API || "";
+  if (/localhost|127\.0\.0\.1/.test(base)) {
+    return " Is the app Worker running? Start it with `npm run dev` in the app repo (or the \u201Capi\u201D server in the preview panel) \u2014 it serves the local API on " + base.replace(/^https?:\/\//, "") + ".";
+  }
+  return base ? " Couldn\u2019t reach the API at " + base + " \u2014 it may be temporarily unavailable." : "";
+}
+
+// The theme in effect right now: the explicit toggle choice (data-theme on <html>) if the visitor set
+// one, else the OS preference. Captured into the embed image URL so the shared PNG matches what the
+// visitor sees — flip the header's light/dark switch, then copy, to pick.
+function currentTheme() {
+  const explicit = document.documentElement.getAttribute("data-theme");
+  if (explicit === "light" || explicit === "dark") return explicit;
+  try { return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; } catch (_) { return "light"; }
 }
 
 function safeHttpUrl(u) {
@@ -206,6 +218,7 @@ function embedImageUrl() {
   try {
     const u = new URL(shareUrl());
     u.searchParams.delete("embed");
+    u.searchParams.set("theme", currentTheme()); // bake the visitor's light/dark choice into the image
     u.hash = "";
     const qs = u.searchParams.toString();
     const ref = refFromPath();
@@ -422,10 +435,12 @@ function renderEmbedChrome() {
 
   const title = document.createElement("div");
   title.className = "embed-title";
+  // Logo ink follows the theme: dark-ink wordmark (logo-light.png) on the light frame, light-ink
+  // (logo-dark.png) on the dark frame.
+  const logo = document.documentElement.getAttribute("data-theme") === "dark" ? "/img/logo-dark.png" : "/img/logo-light.png";
   title.innerHTML =
     '<span class="embed-name">' + esc(a.name) + "</span>" +
-    // The embed frame is pinned to the light palette, so use the dark-ink logo (logo-light.png).
-    '<img class="embed-brand" src="/img/logo-light.png" alt="smplmark" height="22" />';
+    '<img class="embed-brand" src="' + logo + '" alt="smplmark" height="22" />';
 
   const caption = document.createElement("div");
   caption.className = "embed-caption";
@@ -516,6 +531,13 @@ async function init() {
   // Embed mode: render only the data panel (branded), await the draw, and signal ready for the
   // screenshotter — no tabs, no chrome, no other panels.
   if (embedMode) {
+    // The screenshot is headless (no cookie/OS preference), so the theme rides in on the ?theme= param
+    // baked into the image URL. Default light for backward compatibility (older links + the og:image
+    // carry no theme).
+    try {
+      const t = new URLSearchParams(location.search).get("theme");
+      document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+    } catch (_) { document.documentElement.setAttribute("data-theme", "light"); }
     readViewParams();
     setupChartControls();
     renderEmbedChrome();
@@ -567,11 +589,7 @@ function renderHead() {
   const a = benchmark.attributes;
   el("bm-name").innerHTML =
     esc(a.name) +
-    (a.status === "WITHDRAWN"
-      ? ' <span class="pill withdrawn">withdrawn</span>'
-      : !a.closed
-        ? ' <span class="pill live" title="This benchmark is live — the publisher is still adding data.">live</span>'
-        : "");
+    (a.status === "WITHDRAWN" ? ' <span class="pill withdrawn">withdrawn</span>' : "");
   el("bm-tagline").textContent = a.description || "";
   const chipsBox = el("bm-chips");
   if (chipsBox) chipsBox.innerHTML = chipsMarkup(a);
@@ -618,10 +636,6 @@ function renderBanners() {
       ":</strong> " +
       names +
       ". These runs remain visible and are plotted with the rest, flagged as invalid.</div>";
-  }
-  const live = runs.filter((r) => r.attributes.live);
-  if (live.length) {
-    html += '<div class="banner live"><span class="dot"></span>' + live.length + " live run" + (live.length > 1 ? "s" : "") + " — still recording.</div>";
   }
   if (subjectsTruncated || runsTruncated) {
     html +=
@@ -771,7 +785,7 @@ async function renderStats() {
   const num = (n) => (typeof n === "number" ? esc(n.toLocaleString()) : "—");
   const status = a.closed
     ? "Closed" + (a.closed_at ? " · " + esc(fmtDate(a.closed_at)) : "")
-    : '<span class="pill live" title="This benchmark is live — the publisher is still adding data.">live</span>';
+    : "Open";
 
   box.innerHTML =
     '<table class="stats-table"><tbody>' +
@@ -1019,12 +1033,12 @@ function readViewParams() {
   if (dir === "asc") barsDesc = false;
   else if (dir === "desc") barsDesc = true;
 
-  // sort: JSON:API style — "-metric" desc, "metric" asc; must name a declared metric.
+  // sort: JSON:API style — "-key" desc, "key" asc. The key is a metric (CATEGORY table), a statistic
+  // or "__name__" (TIME table); the render functions validate and fall back, so accept it as-is here.
   const sort = params.get("sort");
   if (sort) {
     const desc = sort.charAt(0) === "-";
-    const name = desc ? sort.slice(1) : sort;
-    if (metricList.some((m) => m.name === name)) tableSort = { key: name, desc: desc };
+    tableSort = { key: desc ? sort.slice(1) : sort, desc: desc };
   }
 
   // Drawer filters: facet.<field>=v1,v2 (values aren't validated against the derived facets — a
@@ -1075,7 +1089,9 @@ function syncViewParams() {
     params.set("metrics", metricSelection.join(","));
   }
 
-  if (chartMode === "CATEGORY" && chartView === "table") {
+  if (chartView === "table") {
+    // Non-default for both modes (CATEGORY defaults to bars, TIME to line), so always persist it,
+    // along with the clicked column sort.
     params.set("view", "table");
     if (tableSort.key) params.set("sort", (tableSort.desc ? "-" : "") + tableSort.key);
   } else if (chartMode === "TIME" && chartView === "bars") {
@@ -1141,6 +1157,10 @@ function measurementsUrl(scopeParam, scopeId, range) {
 // One benchmark-wide measurements fetch per range (cached), grouped by each measurement's own subject
 // (a measurement names its subject directly) — instead of one request per subject.
 const observationCache = new Map(); // range key → { bySubject: Map<subjectId, measurement[]>, truncated }
+// Per-subject measurement counts for the drawn timeframe (the badge beside each subject in the filter
+// rail). Independent of the checkbox selection; recomputed whenever the range's observations load.
+let subjectMeasCounts = new Map(); // subjectId → count within the current timeframe
+let subjectMeasCountsKey = null; // the range key those counts were computed for (null = not yet loaded)
 async function observationsBySubject(range) {
   const cacheKey = range || "all";
   if (observationCache.has(cacheKey)) return observationCache.get(cacheKey);
@@ -1161,29 +1181,37 @@ async function observationsBySubject(range) {
 const AXIS = { stroke: "#9aa7b4", grid: { stroke: "#2a3140", width: 1 }, ticks: { stroke: "#2a3140", width: 1 } };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const pad2 = (n) => String(n).padStart(2, "0");
-// A compact UTC timestamp for the hover tooltip: "Jul 18, 22:14:03 UTC" (seconds included — skew is a
-// sub-minute quantity, so the seconds carry meaning).
-function fmtUtcStamp(sec) {
-  const d = new Date(sec * 1000);
-  return MONTHS[d.getUTCMonth()] + " " + d.getUTCDate() + ", " +
-    pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds()) + " UTC";
+// The viewer's local time-zone abbreviation (e.g. "EDT", "GMT+5:30") for the tooltip timestamp.
+function tzAbbr(d) {
+  try {
+    const parts = d.toLocaleTimeString("en-US", { timeZoneName: "short" }).split(" ");
+    return parts[parts.length - 1];
+  } catch (_) { return ""; }
 }
-// Adaptive UTC axis labels. uPlot passes the chosen tick increment (foundIncr, seconds); the label
-// granularity follows it — a date for day+ ticks, "HH:MM" (or "HH:MM:SS" when sub-minute) otherwise —
-// and the date is shown only on the first tick and wherever the UTC day rolls over, so a multi-day
-// window stays anchored without repeating the date on every tick and single-day windows stay terse.
+// A compact local-time timestamp for the hover tooltip: "Jul 18, 22:14:03 EDT" (seconds included —
+// skew is a sub-minute quantity, so the seconds carry meaning). Local time zone from the browser.
+function fmtLocalStamp(sec) {
+  const d = new Date(sec * 1000);
+  const tz = tzAbbr(d);
+  return MONTHS[d.getMonth()] + " " + d.getDate() + ", " +
+    pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()) + (tz ? " " + tz : "");
+}
+// Adaptive local-time axis labels. uPlot passes the chosen tick increment (foundIncr, seconds); the
+// label granularity follows it — a date for day+ ticks, "HH:MM" (or "HH:MM:SS" when sub-minute)
+// otherwise — and the date shows only on the first tick and wherever the local day rolls over, so a
+// multi-day window stays anchored without repeating the date and single-day windows stay terse.
 const DAY_SECONDS = 86400;
-function utcTimeTicks(u, splits, axisIdx, foundSpace, foundIncr) {
+function localTimeTicks(u, splits, axisIdx, foundSpace, foundIncr) {
   const incr = foundIncr || (splits.length > 1 ? splits[1] - splits[0] : 3600);
   let prevDay = null;
   return splits.map((s) => {
     const d = new Date(s * 1000);
-    const dayKey = d.getUTCFullYear() + "-" + d.getUTCMonth() + "-" + d.getUTCDate();
-    const dateLabel = MONTHS[d.getUTCMonth()] + " " + d.getUTCDate();
+    const dayKey = d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+    const dateLabel = MONTHS[d.getMonth()] + " " + d.getDate();
     if (incr >= DAY_SECONDS) { prevDay = dayKey; return dateLabel; }
     const time = incr >= 60
-      ? pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes())
-      : pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()) + ":" + pad2(d.getUTCSeconds());
+      ? pad2(d.getHours()) + ":" + pad2(d.getMinutes())
+      : pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
     const showDate = prevDay === null || dayKey !== prevDay;
     prevDay = dayKey;
     return showDate ? dateLabel + " " + time : time;
@@ -1191,6 +1219,10 @@ function utcTimeTicks(u, splits, axisIdx, foundSpace, foundIncr) {
 }
 function destroyChart() {
   if (chart) { chart.destroy(); chart = null; }
+  // Clear the chart container so a previous view's DOM (bars/table markup, or a leftover uPlot root)
+  // can't linger — switching Bars→Line otherwise stacks the new line chart under the old bars.
+  const cc = el("chart");
+  if (cc) cc.innerHTML = "";
   const lg = el("chart-legend");
   if (lg) { lg.innerHTML = ""; lg.hidden = true; }
   // Every render path calls destroyChart first, so this is where the bars' scroll/resize windowing
@@ -1271,7 +1303,7 @@ function attachChartTooltip(opts, seriesSubjects, yKey, timeX, xLabel) {
     const subject = seriesSubjects[best - 1];
     const name = subject ? subject.attributes.name : u.series[best].label;
     const xv = u.data[0][bestIdx];
-    const xLine = timeX ? fmtUtcStamp(xv) : (xLabel || "x") + ": " + fmtCell(xv);
+    const xLine = timeX ? fmtLocalStamp(xv) : (xLabel || "x") + ": " + fmtCell(xv);
     tip.innerHTML =
       '<div class="chart-tip-head"><span class="chart-tip-dot" style="background:' +
       COLORS[(best - 1) % COLORS.length] + '"></span><span class="chart-tip-name">' + esc(name) + "</span></div>" +
@@ -1345,7 +1377,7 @@ function renderXY(seriesSubjects, perSubjectPoints, yKey, timeX) {
       })),
     ],
     axes: [
-      timeX ? Object.assign({ values: utcTimeTicks, space: 72 }, AXIS) : Object.assign({ label: xLabel, labelSize: 30 }, AXIS),
+      timeX ? Object.assign({ values: localTimeTicks, space: 72 }, AXIS) : Object.assign({ label: xLabel, labelSize: 30 }, AXIS),
       // Size the value gutter to the widest tick label so large (6–7 digit) values don't overrun
       // the rotated axis label. uPlot's default measure sticks to the first draw's magnitudes; this
       // re-derives it from the current ticks (~7px/char + gap/tick padding).
@@ -1595,6 +1627,59 @@ function renderTable(seriesSubjects, bySubject) {
   });
 }
 
+// ── TIME table: one row per subject, one column per statistic for the chosen metric (the same
+// statistics the Bars leaderboard offers, so the numbers match). Click any header to sort by that
+// column; click again to flip. "__name__" sorts by subject name. ──
+const TABLE_STAT_LABEL = { avg: "Avg", median: "Median", min: "Min", max: "Max", p95: "P95", p99: "P99", count: "Count" };
+function renderTimeTable(seriesSubjects, bySubject, yKey) {
+  destroyChart();
+  const unit = metricUnit(yKey);
+  const rows = seriesSubjects.map((t) => {
+    const ys = (bySubject.get(t.id) || [])
+      .map((s) => (s.attributes.metrics || {})[yKey])
+      .filter((v) => typeof v === "number" && isFinite(v));
+    const cells = {};
+    for (const s of STATS) cells[s.key] = ys.length ? statValue(ys, s.key) : s.key === "count" ? 0 : null;
+    return { name: t.attributes.name, cells };
+  });
+  const validKeys = new Set(STATS.map((s) => s.key));
+  const sortKey = tableSort.key && (validKeys.has(tableSort.key) || tableSort.key === "__name__") ? tableSort.key : "avg";
+  rows.sort((a, z) => {
+    if (sortKey === "__name__") {
+      const d = a.name.localeCompare(z.name, undefined, { numeric: true, sensitivity: "base" });
+      return tableSort.desc ? -d : d;
+    }
+    const av = a.cells[sortKey], zv = z.cells[sortKey];
+    const d = (zv == null ? -Infinity : zv) - (av == null ? -Infinity : av); // nulls last, either dir
+    return tableSort.desc ? d : -d;
+  });
+  el("empty").hidden = true;
+  const arrow = (k) => (k === sortKey ? (tableSort.desc ? " ↓" : " ↑") : "");
+  el("chart").innerHTML =
+    '<div class="table-wrap"><table class="data-table"><thead><tr>' +
+    '<th class="sortable" data-sort="__name__">Subject' + arrow("__name__") + "</th>" +
+    STATS.map((s) =>
+      '<th class="sortable" data-sort="' + s.key + '">' + esc(TABLE_STAT_LABEL[s.key] || s.label) +
+      (unit && s.key !== "count" ? " (" + esc(unit) + ")" : "") + arrow(s.key) + "</th>",
+    ).join("") +
+    '</tr></thead><tbody id="table-body"></tbody></table></div>';
+  const fmt = (k, v) => (v == null ? "—" : k === "count" ? v.toLocaleString() : fmtCell(v));
+  const renderRow = (r) =>
+    '<tr><td title="' + esc(r.name) + '">' + esc(r.name) + "</td>" +
+    STATS.map((s) => "<td>" + esc(fmt(s.key, r.cells[s.key])) + "</td>").join("") + "</tr>";
+  const body = el("table-body");
+  if (embedMode) body.innerHTML = rows.slice(0, EMBED_ROWS).map(renderRow).join("");
+  else renderIncremental(body, rows, renderRow);
+  el("chart").querySelectorAll("th.sortable").forEach((th) => {
+    th.addEventListener("click", () => {
+      const k = th.dataset.sort;
+      tableSort = { key: k, desc: tableSort.key === k ? !tableSort.desc : true };
+      syncViewParams();
+      renderTimeTable(seriesSubjects, bySubject, yKey);
+    });
+  });
+}
+
 // Line charts cap the series count — hundreds of overlaid lines are unreadable and slow.
 const MAX_SERIES = 12;
 
@@ -1619,22 +1704,36 @@ async function drawChart() {
   el("chart-status").textContent = "Loading…";
   try {
     const { bySubject, truncated } = await observationsBySubject(range);
+    // Per-subject counts for the rail badges (the loaded observations are already time-filtered by the
+    // range). Recompute + refresh the panel only when the timeframe changed, so a checkbox toggle
+    // (same range) doesn't rebuild the rail underneath the user.
+    const countsKey = range || "all";
+    if (countsKey !== subjectMeasCountsKey) {
+      subjectMeasCounts = new Map();
+      bySubject.forEach((list, sid) => subjectMeasCounts.set(sid, list.length));
+      subjectMeasCountsKey = countsKey;
+      renderFilterPanel();
+    }
     // Bars/leaderboard views (TIME or CATEGORY) list one ranked bar per subject and window on scroll,
     // so they rank ALL selected subjects. Only overlaid LINE/scatter series are capped — dozens of
     // lines are unreadable and slow.
     const barsView = chartView === "bars" && (chartMode === "TIME" || chartMode === "CATEGORY");
+    // Bars and tables are per-subject lists (windowed on scroll), so they show every selected subject;
+    // only overlaid line/scatter series are capped.
+    const listView = chartView === "bars" || chartView === "table";
     let seriesNote = "";
-    if (!barsView && chartMode !== "CATEGORY" && seriesSubjects.length > MAX_SERIES) {
+    if (!listView && chartMode !== "CATEGORY" && seriesSubjects.length > MAX_SERIES) {
       seriesSubjects = seriesSubjects.slice(0, MAX_SERIES);
       seriesNote = " · first " + MAX_SERIES + " selected subjects plotted — narrow the subject list to focus";
     }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
     const perSubjectPoints = seriesSubjects.map((t) => pointsFor(bySubject.get(t.id) || [], yKey, xKey));
-    if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesSubjects, bySubject);
+    if (chartView === "table" && chartMode === "TIME") renderTimeTable(seriesSubjects, bySubject, yKey);
+    else if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesSubjects, bySubject);
     else if (barsView) renderBars(seriesSubjects, perSubjectPoints, yKey);
     else renderXY(seriesSubjects, perSubjectPoints, yKey, chartMode === "TIME");
     const total = perSubjectPoints.reduce((n, pts) => n + pts.length, 0);
-    const viewNoun = barsView ? "leaderboard" : chartMode === "CATEGORY" ? "table" : chartMode.toLowerCase() + " chart";
+    const viewNoun = barsView ? "leaderboard" : chartView === "table" ? "table" : chartMode.toLowerCase() + " chart";
     el("chart-status").textContent =
       total + " measurements · " + seriesSubjects.length + " subject(s) · metric “" + yKey + "” · " +
       viewNoun +
@@ -2120,7 +2219,12 @@ function sectionPool(section) {
 // Read a pool item uniformly, whether it's a raw subject row (SUBJECT) or a facet-value object.
 function itemValue(section, it) { return section.isSubject ? it.id : it.value; }
 function itemLabel(section, it) { return section.isSubject ? it.attributes.name : it.label; }
-function itemCount(section, it) { return section.isSubject ? null : it.count; }
+// Subjects show their measurement count for the current timeframe (null until observations first
+// load, so no misleading "0"s flash before the data arrives); detail facets show their value count.
+function itemCount(section, it) {
+  if (!section.isSubject) return it.count;
+  return subjectMeasCountsKey === null ? null : subjectMeasCounts.get(it.id) || 0;
+}
 
 // Section wrappers key the field-level model by section.field (SUBJECT_FIELD or a detail field).
 function toggleSectionValue(section, value, on) { setValueChecked(section.field, value, on); }
@@ -2329,6 +2433,23 @@ function renderBarControls() {
     });
     return;
   }
+  // TIME table columns are fixed statistics, so it only needs a which-metric picker (when there's a
+  // choice); sorting is done by clicking the column headers.
+  if (chartMode === "TIME") {
+    if (metricList.length > 1) {
+      box.innerHTML =
+        '<label class="field"><span class="vh">Metric</span><select id="metric-select" class="bar-select">' +
+        metricList
+          .map((m) => {
+            const label = titleCase(m.name) + (metricUnit(m.name) ? " (" + metricUnit(m.name) + ")" : "");
+            return '<option value="' + esc(m.name) + '"' + (m.name === currentY() ? " selected" : "") + ">" + esc(label) + "</option>";
+          })
+          .join("") + "</select></label>";
+      const ms = el("metric-select");
+      if (ms) ms.addEventListener("change", () => { metricSelection = [ms.value]; tableSort = { key: null, desc: true }; drawChart(); });
+    }
+    return;
+  }
   // Table: a Columns checkbox dropdown (which metric columns to show). CATEGORY-only.
   if (chartMode !== "CATEGORY" || metricList.length <= 1) return;
   box.innerHTML =
@@ -2390,7 +2511,7 @@ function setupChartControls() {
   // View picker — no "View" label, slid to the right (before Share/Download). TIME offers the trend
   // line vs. a per-subject leaderboard; CATEGORY offers bars vs. a table; NUMBER has no alternate.
   const VIEW_OPTIONS = {
-    TIME: [{ v: "line", label: "Line" }, { v: "bars", label: "Bars" }],
+    TIME: [{ v: "line", label: "Line" }, { v: "bars", label: "Bars" }, { v: "table", label: "Table" }],
     CATEGORY: [{ v: "bars", label: "Bars" }, { v: "table", label: "Table" }],
   };
   const viewOpts = VIEW_OPTIONS[chartMode];
@@ -2398,7 +2519,12 @@ function setupChartControls() {
     // Clamp an out-of-mode ?view= (e.g. a shared TIME link carrying view=table) to a valid option.
     if (!viewOpts.some((o) => o.v === chartView)) chartView = viewOpts[0].v;
     if (chartView === "bars" && metricSelection.length !== 1) metricSelection = [currentY()];
-    if (chartView === "table" && !metricSelection.length) metricSelection = defaultMetricSelection();
+    // CATEGORY's table has one column per metric; TIME's table has one row per subject with a column
+    // per statistic (a single metric), so it stays single-metric like the other TIME views.
+    if (chartView === "table") {
+      if (chartMode === "CATEGORY" && !metricSelection.length) metricSelection = defaultMetricSelection();
+      else if (chartMode === "TIME" && metricSelection.length !== 1) metricSelection = [currentY()];
+    }
     const view = el("view-controls");
     view.innerHTML =
       '<div class="segmented" role="radiogroup" aria-label="View">' +
@@ -2418,8 +2544,8 @@ function setupChartControls() {
           b.classList.toggle("active", on);
           b.setAttribute("aria-checked", String(on));
         });
-        // Bars/Line ⇒ one metric; Table ⇒ the fitting column set (or a carried-over multi-selection).
-        if (chartView === "table") metricSelection = metricSelection.length > 1 ? metricSelection : defaultMetricSelection();
+        // CATEGORY table ⇒ a fitting metric-column set; every other view (incl. TIME table) ⇒ one metric.
+        if (chartMode === "CATEGORY" && chartView === "table") metricSelection = metricSelection.length > 1 ? metricSelection : defaultMetricSelection();
         else metricSelection = [currentY()];
         tableSort = { key: null, desc: true };
         renderBarControls();

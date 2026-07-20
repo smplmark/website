@@ -6,7 +6,8 @@
 // Bump when the embed visual changes so old cached PNGs aren't served under the new template.
 // v2: pinned light palette + light-background logo (was rendering the near-white logo on a light bg).
 // v3: publisher/key path scheme + vertically-centered chart frame (margins above/below).
-export const EMBED_TEMPLATE_VERSION = 3;
+// v4: honor the leaderboard statistic + sort direction (stat/dir) and the caller's theme (light/dark).
+export const EMBED_TEMPLATE_VERSION = 4;
 
 export const EMBED_WIDTH = 1200;
 export const EMBED_HEIGHT = 630;
@@ -17,7 +18,7 @@ export const EMBED_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 // The viewer params that affect the image. Anything else (embed, api, junk) is dropped, so the
 // cache-key space stays bounded and can't be inflated by cache-busting query strings.
-const SCALAR_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort", "q", "page"];
+const SCALAR_PARAM_KEYS = ["from", "to", "range", "subjects", "metrics", "view", "sort", "stat", "dir", "theme", "q", "page"];
 
 function isEmbedParamKey(k: string): boolean {
   return SCALAR_PARAM_KEYS.includes(k) || k.startsWith("facet.");

@@ -686,19 +686,8 @@ footer.site a.gh svg { display: block; }
    server-side image generator (Browser Rendering screenshots it). ── */
 /* Pin the LIGHT palette regardless of the render browser's prefers-color-scheme, so the image is
    deterministic and embeds cleanly on the light backgrounds most sites/social cards use. */
-body.embed {
-  --bg: #f6f8fa;
-  --panel: #ffffff;
-  --panel-2: #f1f4f8;
-  --border: #d6dce4;
-  --text: #1f2328;
-  --muted: #5b6570;
-  --accent: #2f6fe0;
-  --accent-2: #d1481f;
-  --ok: #1a7f37;
-  --tab-active-bg: #ffffff;
-  color-scheme: light;
-}
+/* The embed no longer pins a palette — it inherits the theme set from the ?theme= param (data-theme
+   on <html>), so the shared image matches the light/dark mode the visitor copied it in. */
 body.embed { width: 1200px; height: 630px; overflow: hidden; background: var(--bg); }
 body.embed header.site,
 body.embed footer.site,
