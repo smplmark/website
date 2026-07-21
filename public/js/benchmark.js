@@ -211,14 +211,47 @@ function shareUrl() {
   }
 }
 
+// The absolute [from, to] window (ms) to bake into a TIME image, resolved right now. A preset ("last
+// 24h") resolves against the current minute; an absolute drag-zoom window is used as-is; "all time"
+// (or a half-open window) resolves to the loaded data's actual span. Minute-flooring the "now" edge
+// means copies in the same minute dedupe to one cached image instead of one per millisecond.
+function loadedDataWindow() {
+  const entry = observationCache.get(lastDrawnRange || "all");
+  if (!entry) return null;
+  let min = Infinity, max = -Infinity;
+  entry.bySubject.forEach((list) => list.forEach((s) => {
+    const t = Date.parse(s.attributes.created_at);
+    if (isFinite(t)) { if (t < min) min = t; if (t > max) max = t; }
+  }));
+  return isFinite(min) && isFinite(max) ? { from: min, to: max + 1000 } : null; // +1s: max inside [from,to)
+}
+function embedWindow() {
+  if (rangeState.preset !== undefined) {
+    const secs = RANGE_SECONDS[rangeState.preset];
+    if (secs) { const to = Math.floor(Date.now() / 60000) * 60000; return { from: to - secs * 1000, to }; }
+    return loadedDataWindow(); // "all time"
+  }
+  if (rangeState.from != null && rangeState.to != null) return { from: rangeState.from, to: rangeState.to };
+  return loadedDataWindow(); // a single open bound
+}
+
 // The shareable PNG for the current view: /embed/{key}.png carrying the same view params (no hash,
-// no ?api=/embed). Served by the Worker (generated once, cached). For a TIME benchmark the endpoint
-// needs a bounded from/to; for everything else any view works.
+// no ?api=/embed). Served by the Worker (generated once, cached forever). A TIME view bakes its window
+// as absolute from/to resolved NOW — never a relative preset like range=24h, whose immutable cache
+// entry would keep serving the first day's image forever even as "last 24h" moves on.
 function embedImageUrl() {
   try {
     const u = new URL(shareUrl());
     u.searchParams.delete("embed");
     u.searchParams.set("theme", currentTheme()); // bake the visitor's light/dark choice into the image
+    if (chartMode === "TIME") {
+      const win = embedWindow();
+      if (win) {
+        u.searchParams.delete("range");
+        u.searchParams.set("from", dateParamValue(win.from, false));
+        u.searchParams.set("to", dateParamValue(win.to, true));
+      }
+    }
     u.hash = "";
     const qs = u.searchParams.toString();
     const ref = refFromPath();
