@@ -707,7 +707,8 @@ body.embed .lb-pager,
 body.embed #lb-status,
 body.embed #chart-status,
 body.embed .u-legend { display: none !important; }
-body.embed .chart-legend { display: none !important; } /* embeds name the metric in the caption */
+/* Line/scatter embeds keep their subject legend (see the .chart-is-line rules below); bars/table
+   label subjects inline, so their empty legend stays hidden via its [hidden] attribute. */
 body.embed main { padding: 0; }
 body.embed .wrap { max-width: none; width: 1200px; height: 630px; padding: 0; position: relative; }
 /* Reserve the title (60px) and caption (46px) bands, plus a ~20px breathing gap above and below the
@@ -720,6 +721,12 @@ body.embed .chart-panel { flex: 1; min-height: 0; }
 body.embed #chart, body.embed #lb-main { height: 100%; }
 body.embed #chart { display: flex; flex-direction: column; }
 body.embed #lb-main .table-wrap, body.embed #chart .table-wrap { overflow: hidden; }
+/* Line/scatter embeds also show a subject legend. Let the fixed-height plot size to its content and
+   stack the legend beneath it, centering the pair in the frame. Scoped to the line view (the body
+   flag is set by drawChart) so bars/table keep their full-height container. */
+body.embed.chart-is-line .chart-panel { display: flex; flex-direction: column; justify-content: center; }
+body.embed.chart-is-line #chart { height: auto; }
+body.embed.chart-is-line .chart-legend { max-height: 56px; overflow: hidden; padding-top: 12px; }
 /* The metric title sits above the bars (naming what the image shows); the bars fill the rest and
    distribute evenly across it (space-evenly gives equal margins at the ends too). */
 body.embed .bars-title { flex: none; margin-bottom: 6px; }

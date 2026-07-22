@@ -1761,6 +1761,14 @@ async function drawChart() {
     }
     const xKey = chartMode === "NUMBER" ? chartDecl.x : "created_at";
     const perSubjectPoints = seriesSubjects.map((t) => pointsFor(bySubject.get(t.id) || [], yKey, xKey));
+    // Only the line/scatter view carries a subject color→name legend (bars/table label subjects
+    // inline). Flag the body so the embed layout makes room for that legend below the plot.
+    const lineView = !(
+      (chartView === "table" && chartMode === "TIME") ||
+      (chartMode === "CATEGORY" && chartView === "table") ||
+      barsView
+    );
+    document.body.classList.toggle("chart-is-line", lineView);
     if (chartView === "table" && chartMode === "TIME") renderTimeTable(seriesSubjects, bySubject, yKey);
     else if (chartMode === "CATEGORY" && chartView === "table") renderTable(seriesSubjects, bySubject);
     else if (barsView) renderBars(seriesSubjects, perSubjectPoints, yKey);

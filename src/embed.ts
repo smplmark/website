@@ -7,7 +7,8 @@
 // v2: pinned light palette + light-background logo (was rendering the near-white logo on a light bg).
 // v3: publisher/key path scheme + vertically-centered chart frame (margins above/below).
 // v4: honor the leaderboard statistic + sort direction (stat/dir) and the caller's theme (light/dark).
-export const EMBED_TEMPLATE_VERSION = 4;
+// v5: line/scatter images now include the subject color→name legend below the plot.
+export const EMBED_TEMPLATE_VERSION = 5;
 
 export const EMBED_WIDTH = 1200;
 export const EMBED_HEIGHT = 630;
