@@ -343,6 +343,23 @@ a.pill:hover { border-color: var(--accent); color: var(--accent); text-decoratio
 .history-table .history-actor { color: var(--muted); white-space: nowrap; }
 .history-note { color: var(--muted); font-size: 14px; }
 
+/* Every history row expands on click to the raw event record (the details view). */
+.history-table tr.history-row { cursor: pointer; }
+.history-table tr.history-row:hover td { background: var(--panel-2); }
+.history-table tr.history-row.open td { border-bottom: none; }
+.history-table tr.history-details td { padding: 0 16px 12px; }
+.history-table tr.history-details pre {
+  margin: 0; padding: 12px 14px; overflow-x: auto;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text);
+}
+.history-controls .field input[type="date"] {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 7px; height: var(--control-h); padding: 0 10px;
+  font-size: 14px; font-family: var(--sans);
+}
+.more-bars:disabled { opacity: 0.6; cursor: default; }
+
 .publisher { max-width: var(--contentw); margin: 0 auto; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 22px 24px; }
 .publisher h3 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
 .publisher .since { color: var(--muted); font-size: 13px; margin: 0 0 14px; }

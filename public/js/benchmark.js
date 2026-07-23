@@ -826,66 +826,172 @@ async function renderStats() {
 }
 
 // ── History tab — the benchmark's public change record (§8 credibility: every post-publish edit,
-// correction, withdrawal, or removal is on the record). Fetched lazily on first open, like Stats. ──
+// correction, withdrawal, or removal is on the record). Fetched lazily on first open, like Stats.
+// Cursor-paged (page[size]/page[after] + meta.next_cursor), filterable by event type and date
+// range, and each row expands to the raw event JSON. ──
 let historyLoaded = false;
 
 // Short human labels for the audit event types; an unknown type falls back to the raw string.
+// Includes internal-only types (benchmark.created, subject.*, takedown_requested) so the owner
+// console view — same page, covered credential — never shows a raw slug either.
 const HISTORY_EVENT_LABELS = {
+  "benchmark.created": "Created",
   "benchmark.published": "Published",
   "benchmark.edited": "Edited",
   "benchmark.closed": "Closed to new data",
   "benchmark.reopened": "Reopened to new data",
   "benchmark.withdrawn": "Withdrawn",
   "benchmark.taken_down": "Removed by operators",
+  "benchmark.takedown_requested": "Takedown requested",
   "run.created": "Run created",
   "run.ended": "Run ended",
   "run.reopened": "Run reopened",
   "run.appended": "Run appended",
   "run.invalidated": "Run invalidated",
   "run.edited": "Run edited",
-  "measurement.created": "Measurement created",
   "measurement.corrected": "Measurement corrected",
+  "measurement.deleted": "Measurement deleted",
+  "subject.created": "Subject created",
+  "subject.edited": "Subject edited",
 };
 
-function historyRow(e) {
+// The event-type filter offers only types that can appear on the public record (internal-only
+// ones would just yield an empty page and read as a bug).
+const HISTORY_FILTER_TYPES = [
+  "benchmark.published", "benchmark.edited", "benchmark.closed", "benchmark.reopened",
+  "benchmark.withdrawn", "benchmark.taken_down",
+  "run.created", "run.ended", "run.reopened", "run.appended", "run.invalidated", "run.edited",
+  "measurement.corrected", "measurement.deleted",
+];
+
+const HISTORY_PAGE_SIZE = 50;
+// Accumulated pages + the cursor to the next one; filters reset the accumulation.
+const historyState = { events: [], cursor: null, eventType: "", from: "", to: "", open: {} };
+
+// Date AND time — history entries need minute resolution (a correction and the edit that prompted
+// it can land the same day). Local time; the full ISO timestamp stays on the hover title.
+function fmtDateTime(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function historyUrl() {
+  const params = ["page[size]=" + HISTORY_PAGE_SIZE];
+  if (historyState.cursor) params.push("page[after]=" + encodeURIComponent(historyState.cursor));
+  if (historyState.eventType) params.push("filter[event_type]=" + encodeURIComponent(historyState.eventType));
+  // A day picked in the local calendar means that local day: send local midnight → local
+  // end-of-day as the inclusive ISO bounds (the table renders local time too).
+  if (historyState.from) params.push("filter[from]=" + encodeURIComponent(new Date(historyState.from + "T00:00:00").toISOString()));
+  if (historyState.to) params.push("filter[to]=" + encodeURIComponent(new Date(historyState.to + "T23:59:59.999").toISOString()));
+  return API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/history?" + params.join("&");
+}
+
+function historyRow(e, idx) {
   const at = e.attributes || {};
   const label = HISTORY_EVENT_LABELS[at.event_type] || at.event_type || "";
   const semantic = at.semantic_core
     ? ' <span class="pill semantic" title="This change affects the meaning of the published results.">semantic change</span>'
     : "";
   const actor = at.actor && at.actor.label ? at.actor.label : "";
-  return (
-    '<tr><td class="history-date" title="' + esc(at.occurred_at || "") + '">' + esc(fmtDate(at.occurred_at)) + "</td>" +
+  const open = historyState.open[e.id];
+  let html =
+    '<tr class="history-row' + (open ? " open" : "") + '" data-idx="' + idx + '" title="Click for the raw event record">' +
+    '<td class="history-date" title="' + esc(at.occurred_at || "") + '">' + esc(fmtDateTime(at.occurred_at)) + "</td>" +
     '<td class="history-event">' + esc(label) + semantic + "</td>" +
     '<td class="history-desc">' + esc(at.description || "") + "</td>" +
-    '<td class="history-actor">' + esc(actor) + "</td></tr>"
-  );
+    '<td class="history-actor">' + esc(actor) + "</td></tr>";
+  if (open) {
+    html +=
+      '<tr class="history-details"><td colspan="4"><pre>' +
+      esc(JSON.stringify({ id: e.id, ...at }, null, 2)) +
+      "</pre></td></tr>";
+  }
+  return html;
 }
 
-async function renderHistory() {
-  const box = el("history-body");
+function renderHistoryTable() {
+  const box = el("history-list");
   if (!box) return;
-  box.innerHTML = '<p class="history-note">Loading…</p>';
-  let events;
+  const filtered = historyState.eventType || historyState.from || historyState.to;
+  if (!historyState.events.length) {
+    box.innerHTML =
+      '<p class="history-note">' +
+      (filtered ? "No events match the current filters." : "No public history recorded for this benchmark.") +
+      "</p>";
+    return;
+  }
+  // Events arrive newest first — render them in that order.
+  let html =
+    '<table class="history-table"><thead><tr>' +
+    "<th>Date</th><th>Event</th><th>Description</th><th>By</th></tr></thead><tbody>" +
+    historyState.events.map(historyRow).join("") +
+    "</tbody></table>";
+  if (historyState.cursor) html += '<button type="button" class="more-bars" id="history-more">Load more</button>';
+  box.innerHTML = html;
+  for (const row of box.querySelectorAll("tr.history-row")) {
+    row.addEventListener("click", () => {
+      const e = historyState.events[Number(row.dataset.idx)];
+      historyState.open[e.id] = !historyState.open[e.id];
+      renderHistoryTable();
+    });
+  }
+  const more = el("history-more");
+  if (more) more.addEventListener("click", () => loadHistoryPage(false));
+}
+
+async function loadHistoryPage(reset) {
+  const box = el("history-list");
+  if (!box) return;
+  if (reset) {
+    historyState.events = [];
+    historyState.cursor = null;
+    historyState.open = {};
+    box.innerHTML = '<p class="history-note">Loading…</p>';
+  } else {
+    const more = el("history-more");
+    if (more) { more.disabled = true; more.textContent = "Loading…"; }
+  }
   try {
-    const doc = await fetchJson(API + "/api/v1/benchmarks/" + encodeURIComponent(benchmark.id) + "/history");
-    events = Array.isArray(doc.data) ? doc.data : [];
+    const doc = await fetchJson(historyUrl());
+    historyState.events = historyState.events.concat(Array.isArray(doc.data) ? doc.data : []);
+    historyState.cursor = (doc.meta && doc.meta.next_cursor) || null;
   } catch (_) {
     // Covers 503 (audit store temporarily unavailable) and any fetch failure — a muted line, never
     // a broken page.
     box.innerHTML = '<p class="history-note">History is temporarily unavailable.</p>';
     return;
   }
-  if (!events.length) {
-    box.innerHTML = '<p class="history-note">No public history recorded for this benchmark.</p>';
-    return;
-  }
-  // Events arrive newest first — render them in that order.
+  renderHistoryTable();
+}
+
+function renderHistory() {
+  const box = el("history-body");
+  if (!box) return;
+  const typeOptions = HISTORY_FILTER_TYPES.map(
+    (t) => '<option value="' + esc(t) + '">' + esc(HISTORY_EVENT_LABELS[t] || t) + "</option>",
+  ).join("");
   box.innerHTML =
-    '<table class="history-table"><thead><tr>' +
-    "<th>Date</th><th>Event</th><th>Description</th><th>By</th></tr></thead><tbody>" +
-    events.map(historyRow).join("") +
-    "</tbody></table>";
+    '<div class="controls history-controls">' +
+    '<div class="field"><label for="history-type">Event</label>' +
+    '<select id="history-type"><option value="">All events</option>' + typeOptions + "</select></div>" +
+    '<div class="field"><label for="history-from">From</label><input type="date" id="history-from"></div>' +
+    '<div class="field"><label for="history-to">To</label><input type="date" id="history-to"></div>' +
+    "</div>" +
+    '<div id="history-list"></div>';
+  el("history-type").addEventListener("change", (ev) => {
+    historyState.eventType = ev.target.value;
+    loadHistoryPage(true);
+  });
+  const dateInput = (id, key) =>
+    el(id).addEventListener("change", (ev) => {
+      historyState[key] = ev.target.value;
+      loadHistoryPage(true);
+    });
+  dateInput("history-from", "from");
+  dateInput("history-to", "to");
+  loadHistoryPage(true);
 }
 
 // ── Tabs — hash-routed (#overview/#data/#metrics/#methodology/#publisher/#stats/#history) so
