@@ -405,7 +405,6 @@ function fmtDate(iso) {
 }
 
 let benchmark = null;
-let publisher = null;
 let subjects = [];
 let subjectsTruncated = false;
 let runs = []; // benchmark-wide; each carries attributes incl subject + live + invalidated
@@ -527,11 +526,6 @@ async function init() {
     }).catch(() => {});
   }
 
-  try {
-    publisher = (await fetchJson(API + "/api/v1/accounts/" + encodeURIComponent(a.account))).data;
-  } catch (_) {
-    publisher = null;
-  }
   const schema = a.measurement_schema || { metrics: [], derived: [] };
   metricList = [...(schema.metrics || []), ...(schema.derived || [])];
   chartDecl = schema.chart || inferChart(metricList);
@@ -751,17 +745,14 @@ function renderPublisher() {
       '<div class="publisher-badge">' + attributionMarkup(pa) +
       '<span class="publisher-kind' + (verified ? " verified" : "") + '">' +
       (verified ? checkIcon() + "Verified" : "Unverified") + "</span></div>";
-  }
-  if (publisher) {
-    const p = publisher.attributes;
-    const since = p.created_at
-      ? new Date(p.created_at).toLocaleDateString(undefined, { year: "numeric", month: "long" })
+    // "Publishing since" reads the publisher's join date straight off the benchmark's frozen
+    // published_as — no account lookup. Nothing else about the account surfaces here: the public
+    // byline is exactly the un-fudge-able identity (verified domain / display name + tier), with no
+    // free-text description that could ride the verified badge to imply a bigger name than it is.
+    const since = pa.since
+      ? new Date(pa.since).toLocaleDateString(undefined, { year: "numeric", month: "long" })
       : null;
-    const link = safeHttpUrl(p.url);
-    html +=
-      (since ? `<p class="since">Publishing on smplmark since ${esc(since)}</p>` : "") +
-      (p.description ? `<p>${esc(p.description)}</p>` : "") +
-      (link ? `<a class="site" href="${esc(link)}" target="_blank" rel="noopener">${esc(link)}</a>` : "");
+    if (since) html += `<p class="since">Publishing on smplmark since ${esc(since)}</p>`;
   }
   if (!html) {
     box.innerHTML = '<p class="muted">Publisher information is unavailable.</p>';
