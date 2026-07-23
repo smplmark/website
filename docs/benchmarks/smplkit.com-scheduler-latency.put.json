@@ -1,0 +1,25 @@
+{
+  "data": {
+    "type": "benchmark",
+    "attributes": {
+      "name": "Scheduler Latency",
+      "description": "A measure of HTTP-based job scheduler latency (how \"on time\" various job schedulers fire).",
+      "about": "A measure of how \"on time\" various HTTP job schedulers are.  An HTTP job scheduler calls some HTTP-based API on the schedule of your choosing.  For this benchmark, we evaluated only schedulers that offer some sort of free tier and configured them to fire requests every 60 minutes at this website, smplmark.org, and then captured when the request was received to calculate how \"on time\" the scheduler was.",
+      "methodology": "Each scheduler is configured to execute a single HTTP POST to `https://app.smplmark.org/api/v1/measurements` every 60 minutes, at the top of the hour. The receiver records the date/time each request arrives; the derived metric is the number of milliseconds past the top of the hour — the skew. The lower the skew, the more on time the scheduler.\n\n**How arrival time is captured.** The receiver is a Cloudflare Worker; the received-at timestamp is read from the Worker's clock in the application-layer request handler, after the request body is parsed and the sending run is authorized against the database — not at the network edge. Workers advance their clock only at I/O boundaries (a Spectre mitigation), so the stamp reflects the platform clock as of the last of those database reads, a few milliseconds after the first byte arrives. Cloudflare publishes no accuracy specification for that clock; it is visibly stable across days, but its absolute discipline is Cloudflare's, not ours. The receiver is identical for every subject, so its overhead is a constant, not a bias between contestants.\n\n**The wrap.** Skew is computed modulo the hour, so a scheduler that fires 61 minutes late reads as 1 minute late — and a request that arrived early would read as nearly an hour late. Most schedulers don't expose the intended fire time to the request payload (AWS EventBridge Scheduler is an exception — it can inject the scheduled time via context attributes), and we configured all ten subjects identically rather than special-casing the one that can. So we measure at the receiver and accept the wrap. In practice the only subject that gets near it is GitHub Actions, which misses by wild margins, not by seconds.\n\n**Geography.** The receiver operates in US-East. Schedulers firing from US-West or Europe pay a network tax of a few milliseconds that US-East schedulers — including Smpl Jobs, which runs in AWS us-east-1 — do not. The scheduling engine's own latency dominates the results.\n\n**Configuration.** Each subject is configured for a single hourly job at the top of the hour. Most run on the vendor's free tier; the couple that bill at all cost on the order of a dollar a month (per-subject tiers: TBD (Mike)).\n\n- **AWS EventBridge Scheduler** — hourly, top of the hour; region: TBD (Mike); flexible time window: TBD (Mike; expected: Off).\n- **Cloudflare Workers** — hourly cron trigger, top of the hour; runs on Cloudflare's network (no region to choose).\n- **cron-job.org** — hourly, top of the hour; region: TBD (Mike).\n- **EasyCron** — hourly, top of the hour; region: TBD (Mike).\n- **GitHub Actions** — hourly `schedule` cron, top of the hour; GitHub-hosted runners (no region to choose).\n- **Google Cloud Scheduler** — hourly, top of the hour; region: TBD (Mike).\n- **Posthook** — hourly, top of the hour; region: TBD (Mike).\n- **QStash** — hourly schedule, top of the hour; region: TBD (Mike).\n- **Runhooks** — hourly, top of the hour; region: TBD (Mike).\n- **Smpl Jobs** — hourly, top of the hour; AWS us-east-1.\n\n**Changelog.**\n\n- July 19, 2026: measurement began with seven subjects — AWS EventBridge, cron-job.org, EasyCron, GitHub Actions, Google Cloud Scheduler, Posthook, and Smpl Jobs.\n- July 20, 2026: Smpl Jobs shipped dispatch-overhead compensation — the worker starts 250 ms early to absorb internal dispatch latency. The change applies to all customers. Windows cited in the smplkit article start after this date.\n- July 21, 2026: Cloudflare Workers and QStash joined the board.\n- July 22, 2026: Runhooks joined the board.\n\n**Disputes.** Every subject's configuration is listed above, and the benchmark never stops running. A faster scheduler shows up on the board within the hour. That's the appeals process.\n\nPublished by smplkit.com. smplmark.org is owned and operated by smplkit.com; Smpl Jobs is a smplkit product and a subject on this board.",
+      "subject_type": "job-scheduler",
+      "measurement_schema": {
+        "metrics": [],
+        "derived": [
+          {
+            "name": "skew",
+            "unit": "ms",
+            "format": "#,##0",
+            "description": "The number of milliseconds past the \"top of the hour\"."
+          }
+        ]
+      },
+      "category": "OTHER",
+      "tags": []
+    }
+  }
+}

@@ -16,6 +16,15 @@ export const SITE_ORIGIN = "https://www.smplmark.org";
 export const PROD_API_ORIGIN = "https://app.smplmark.org";
 const OG_IMAGE = `${SITE_ORIGIN}/img/logo-dark.png`;
 
+// Per-benchmark og:image view params, keyed by "{publisher}/{key}": boards whose best social card
+// is a specific aggregate view. Aggregate views are windowless-safe — the bounded-range rule in
+// validateEmbedParams only applies to TIME charts — so these unfurl the live chart even when the
+// underlying data is a time series.
+const OG_EMBED_PARAMS: Record<string, string> = {
+  "smplkit.com/scheduler-latency":
+    "view=bars&stat=median&dir=asc&theme=dark&subjects=%7Egithub-actions",
+};
+
 const CATEGORY_LABELS: Record<string, string> = {
   HARDWARE: "Hardware",
   DATABASE: "Database",
@@ -247,10 +256,13 @@ export function benchmarkHeadExtras(
   // large-image Twitter card shows the chart prominently; the logo uses the plain summary card.
   const xKind = a.measurement_schema?.chart?.x_kind;
   const hasChartImage = xKind !== undefined && xKind !== "TIME";
-  const image = hasChartImage
-    ? embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, publisher, key)
-    : OG_IMAGE;
-  const twitterCard = hasChartImage ? "summary_large_image" : "summary";
+  const ogParams = OG_EMBED_PARAMS[`${publisher}/${key}`];
+  const image = ogParams !== undefined
+    ? `${embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, publisher, key)}?${ogParams}`
+    : hasChartImage
+      ? embedImageUrl(opts.siteOrigin ?? SITE_ORIGIN, publisher, key)
+      : OG_IMAGE;
+  const twitterCard = ogParams !== undefined || hasChartImage ? "summary_large_image" : "summary";
 
   const meta: string[] = [
     `<meta name="description" content="${escapeHtml(description)}" />`,

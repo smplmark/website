@@ -259,6 +259,17 @@ describe("benchmarkHeadExtras", () => {
     expect(cat).toContain('<meta name="twitter:card" content="summary_large_image"');
   });
 
+  it("uses the pinned aggregate-view embed as og:image for boards with per-benchmark OG params", () => {
+    const board = benchmarkHeadExtras(
+      bench({ key: "scheduler-latency", publisher_slug: "smplkit.com" }),
+      { apiOrigin: API },
+    );
+    expect(board).toContain(
+      '<meta property="og:image" content="https://www.smplmark.org/embed/smplkit.com/scheduler-latency.png?view=bars&amp;stat=median&amp;dir=asc&amp;theme=dark&amp;subjects=%7Egithub-actions"',
+    );
+    expect(board).toContain('<meta name="twitter:card" content="summary_large_image"');
+  });
+
   it("keeps the logo (summary card) for TIME charts, which lack a bounded default window", () => {
     const time = benchmarkHeadExtras(
       bench({ measurement_schema: { metrics: [{ name: "m" }], derived: [], chart: { x_kind: "TIME" } } }),
