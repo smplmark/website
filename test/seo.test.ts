@@ -20,6 +20,13 @@ import {
 
 const API = "https://app.smplmark.org";
 
+// The default Dataset.license when no license is known: the smplmark Terms of Service.
+const TOS_LICENSE = {
+  "@type": "CreativeWork",
+  name: "smplmark Terms of Service",
+  url: "https://www.smplmark.org/terms",
+};
+
 function bench(over: Partial<BenchmarkResource["attributes"]> = {}, id = "b1"): BenchmarkResource {
   return {
     id,
@@ -140,24 +147,57 @@ describe("datasetJsonLd", () => {
     ]);
   });
 
-  it("uses Person for a personal publisher and omits license/isBasedOn", () => {
+  it("uses Person for a personal publisher, defaults the license to the ToS, and omits isBasedOn", () => {
     const ld = datasetJsonLd(
       bench({ published_as: { kind: "PERSONAL", display_name: "Mike G" } }),
       { apiOrigin: API },
     );
     expect(ld.creator).toEqual({ "@type": "Person", name: "Mike G" });
-    expect(ld.license).toBeUndefined();
+    expect(ld.license).toEqual(TOS_LICENSE);
     expect(ld.isBasedOn).toBeUndefined();
   });
 
-  it("uses the verified domain as the creator name for an organization publish", () => {
+  it("emits the declared license for a PERSONAL publish, with the canonical URL when known", () => {
+    const ld = datasetJsonLd(
+      bench({ published_as: { kind: "PERSONAL", display_name: "Mike G", license: "CC-BY-4.0" } }),
+      { apiOrigin: API },
+    );
+    expect(ld.license).toEqual({
+      "@type": "CreativeWork",
+      name: "CC-BY-4.0",
+      url: "https://creativecommons.org/licenses/by/4.0/",
+    });
+  });
+
+  it("uses the verified domain as the creator name for an organization publish; ToS default license", () => {
     const ld = datasetJsonLd(
       bench({ published_as: { kind: "ORGANIZATION", domain: "smplkit.com", icon: "favicon" } }),
       { apiOrigin: API },
     );
     expect(ld.creator).toEqual({ "@type": "Organization", name: "smplkit.com" });
-    expect(ld.license).toBeUndefined();
+    expect(ld.license).toEqual(TOS_LICENSE);
     expect(ld.isBasedOn).toBeUndefined();
+  });
+
+  it("emits the declared license for an ORGANIZATION publish (name-only when unknown to the URL map)", () => {
+    const ld = datasetJsonLd(
+      bench({ published_as: { kind: "ORGANIZATION", domain: "smplkit.com", icon: "favicon", license: "ODbL-1.0" } }),
+      { apiOrigin: API },
+    );
+    expect(ld.license).toEqual({ "@type": "CreativeWork", name: "ODbL-1.0" });
+  });
+
+  it("builds the ToS default license URL from the caller's siteOrigin, falling back to production", () => {
+    const noLicense = bench({ published_as: { kind: "PERSONAL", display_name: "Mike G" } });
+    const staged = datasetJsonLd(noLicense, { apiOrigin: API, siteOrigin: "https://staging.smplmark.org" });
+    expect(staged.license).toEqual({
+      "@type": "CreativeWork",
+      name: "smplmark Terms of Service",
+      url: "https://staging.smplmark.org/terms",
+    });
+    // No siteOrigin (and no published_as at all) → the production origin, never a relative or local URL.
+    const bare = datasetJsonLd(bench({ published_as: undefined }), { apiOrigin: API });
+    expect(bare.license).toEqual(TOS_LICENSE);
   });
 
   it("omits optional fields when data is absent", () => {
@@ -184,13 +224,13 @@ describe("datasetJsonLd", () => {
     expect(ld.keywords).toEqual(["blender", "cpu"]);
   });
 
-  it("omits creator.url and INGESTED license/isBasedOn when the source URL/license is blank", () => {
+  it("omits creator.url and isBasedOn when the INGESTED source URL is blank; blank license → ToS default", () => {
     const ld = datasetJsonLd(
       bench({ published_as: { kind: "INGESTED", source_name: "Src", source_url: "", license: "" } }),
       { apiOrigin: API },
     );
     expect(ld.creator).toEqual({ "@type": "Organization", name: "Src" });
-    expect(ld.license).toBeUndefined();
+    expect(ld.license).toEqual(TOS_LICENSE);
     expect(ld.isBasedOn).toBeUndefined();
   });
 

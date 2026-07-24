@@ -211,15 +211,28 @@ export function datasetJsonLd(
     ld.creator = creator;
   }
 
+  // Every Dataset carries a license, for every publish kind — Google flags a Dataset without one.
+  // published_as.license is the known license when there is one (the source's own terms for an
+  // INGESTED benchmark, the publisher-declared license otherwise). When none is known we default to
+  // the smplmark Terms of Service rather than inventing a reuse license: publishers retain ownership
+  // of their data, and the ToS is what actually governs it.
+  const license = str(pa?.license);
+  if (license) {
+    // A CreativeWork (never a bare identifier string), with the canonical license URL when known.
+    const work: Record<string, unknown> = { "@type": "CreativeWork", name: license };
+    const licenseUrl = LICENSE_URLS[license];
+    if (licenseUrl) work.url = licenseUrl;
+    ld.license = work;
+  } else {
+    // Same origin derivation as canonicalUrl: the caller's siteOrigin, else production.
+    ld.license = {
+      "@type": "CreativeWork",
+      name: "smplmark Terms of Service",
+      url: `${opts.siteOrigin ?? SITE_ORIGIN}/terms`,
+    };
+  }
+
   if (pa && str(pa.kind) === "INGESTED") {
-    const license = str(pa.license);
-    if (license) {
-      // A CreativeWork (never a bare identifier string), with the canonical license URL when known.
-      const work: Record<string, unknown> = { "@type": "CreativeWork", name: license };
-      const licenseUrl = LICENSE_URLS[license];
-      if (licenseUrl) work.url = licenseUrl;
-      ld.license = work;
-    }
     const sourceUrl = str(pa.source_url);
     if (sourceUrl) ld.isBasedOn = sourceUrl;
   }
