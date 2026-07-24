@@ -864,7 +864,10 @@ const HISTORY_FILTER_TYPES = [
   "measurement.corrected", "measurement.deleted",
 ];
 
-const HISTORY_PAGE_SIZE = 50;
+// 200 (the endpoint max) because pages are filtered AFTER the audit read: stretches of stored
+// events can be invisible on the public view (retired measurement.created noise, internal events),
+// and bigger pages mean fewer walk requests to get past them.
+const HISTORY_PAGE_SIZE = 200;
 // Accumulated pages + the cursor to the next one; filters reset the accumulation.
 const historyState = { events: [], cursor: null, eventType: "", from: "", to: "", open: {} };
 
@@ -915,27 +918,32 @@ function renderHistoryTable() {
   const box = el("history-list");
   if (!box) return;
   const filtered = historyState.eventType || historyState.from || historyState.to;
+  const moreBtn = historyState.cursor
+    ? '<button type="button" class="more-bars" id="history-more">Load more</button>'
+    : "";
   if (!historyState.events.length) {
+    // A remaining cursor means the walk hit its bound before anything visible landed — offer to
+    // keep going rather than misreporting an empty record.
     box.innerHTML =
       '<p class="history-note">' +
       (filtered ? "No events match the current filters." : "No public history recorded for this benchmark.") +
-      "</p>";
-    return;
-  }
-  // Events arrive newest first — render them in that order.
-  let html =
-    '<table class="history-table"><thead><tr>' +
-    "<th>Date</th><th>Event</th><th>Description</th><th>By</th></tr></thead><tbody>" +
-    historyState.events.map(historyRow).join("") +
-    "</tbody></table>";
-  if (historyState.cursor) html += '<button type="button" class="more-bars" id="history-more">Load more</button>';
-  box.innerHTML = html;
-  for (const row of box.querySelectorAll("tr.history-row")) {
-    row.addEventListener("click", () => {
-      const e = historyState.events[Number(row.dataset.idx)];
-      historyState.open[e.id] = !historyState.open[e.id];
-      renderHistoryTable();
-    });
+      "</p>" +
+      moreBtn;
+  } else {
+    // Events arrive newest first — render them in that order.
+    box.innerHTML =
+      '<table class="history-table"><thead><tr>' +
+      "<th>Date</th><th>Event</th><th>Description</th><th>By</th></tr></thead><tbody>" +
+      historyState.events.map(historyRow).join("") +
+      "</tbody></table>" +
+      moreBtn;
+    for (const row of box.querySelectorAll("tr.history-row")) {
+      row.addEventListener("click", () => {
+        const e = historyState.events[Number(row.dataset.idx)];
+        historyState.open[e.id] = !historyState.open[e.id];
+        renderHistoryTable();
+      });
+    }
   }
   const more = el("history-more");
   if (more) more.addEventListener("click", () => loadHistoryPage(false));
@@ -954,9 +962,16 @@ async function loadHistoryPage(reset) {
     if (more) { more.disabled = true; more.textContent = "Loading…"; }
   }
   try {
-    const doc = await fetchJson(historyUrl());
-    historyState.events = historyState.events.concat(Array.isArray(doc.data) ? doc.data : []);
-    historyState.cursor = (doc.meta && doc.meta.next_cursor) || null;
+    // Walk the cursor until at least one event lands or the trail ends (bounded): a page can be
+    // empty but not final, because visibility is filtered after the audit read — e.g. the stretch
+    // of retired measurement.created noise a live benchmark wrote before that event was dropped.
+    for (let i = 0; i < 20; i++) {
+      const doc = await fetchJson(historyUrl());
+      const rows = Array.isArray(doc.data) ? doc.data : [];
+      historyState.events = historyState.events.concat(rows);
+      historyState.cursor = (doc.meta && doc.meta.next_cursor) || null;
+      if (rows.length || !historyState.cursor) break;
+    }
   } catch (_) {
     // Covers 503 (audit store temporarily unavailable) and any fetch failure — a muted line, never
     // a broken page.
